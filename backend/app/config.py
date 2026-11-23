@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
     app_env: Literal["development", "staging", "production"] = "development"
     log_level: str = "INFO"
+    log_format: Literal["text", "json"] = "text"
 
     # ── Security ───────────────────────────────────────────
     secret_key: str = "supportpilot_default_secret_key_32_characters_minimum"

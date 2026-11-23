@@ -115,7 +115,7 @@ export default function Topbar() {
                   </div>
                   <div>
                     <p className="font-semibold text-gray-800 dark:text-gray-200">Knowledge Ingestion Succeeded</p>
-                    <p className="text-gray-400 text-[11px]">'API Authentication & Token Lifecycle' indexed in ChromaDB.</p>
+                    <p className="text-gray-400 text-[11px]">&lsquo;API Authentication &amp; Token Lifecycle&rsquo; indexed in ChromaDB.</p>
                     <span className="text-[10px] text-gray-400">18 mins ago</span>
                   </div>
                 </div>

@@ -47,7 +47,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if path in ("/health", "/docs", "/redoc", "/openapi.json"):
             return await call_next(request)
 
-        client_ip = request.client.host if request.client else "unknown"
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            client_ip = forwarded.split(",")[0].strip()
+        else:
+            client_ip = request.client.host if request.client else "unknown"
         now = time.time()
         window_start = now - _WINDOW_SECONDS
 

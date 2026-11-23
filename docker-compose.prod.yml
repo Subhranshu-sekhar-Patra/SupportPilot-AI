@@ -1,0 +1,173 @@
+# ============================================================
+# SupportPilot AI — Production Docker Compose Configuration
+# Services: PostgreSQL 16, ChromaDB, FastAPI Backend, Next.js Frontend, n8n Automation
+# ============================================================
+version: "3.9"
+
+networks:
+  supportpilot_prod_net:
+    driver: bridge
+
+volumes:
+  postgres_prod_data:
+    driver: local
+  uploads_prod_data:
+    driver: local
+  chroma_prod_data:
+    driver: local
+  n8n_prod_data:
+    driver: local
+
+services:
+  # ──────────────────────────────────────────────────────────
+  # 1. PostgreSQL Database (Production Hardened)
+  # ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: supportpilot_postgres_prod
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-supportpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Database password required}
+      POSTGRES_DB: ${POSTGRES_DB:-supportpilot_prod}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_prod_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supportpilot} -d ${POSTGRES_DB:-supportpilot_prod}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    networks:
+      - supportpilot_prod_net
+
+  # ──────────────────────────────────────────────────────────
+  # 2. FastAPI Backend Service (Production Multi-worker Gunicorn)
+  # ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    container_name: supportpilot_backend_prod
+    restart: always
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      LOG_LEVEL: INFO
+      LOG_FORMAT: json
+      POSTGRES_HOST: postgres
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-supportpilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supportpilot_prod}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-supportpilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supportpilot_prod}
+    volumes:
+      - uploads_prod_data:/app/uploads
+      - chroma_prod_data:/app/chroma_data
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    networks:
+      - supportpilot_prod_net
+
+  # ──────────────────────────────────────────────────────────
+  # 3. Next.js Frontend Service (Standalone Production)
+  # ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+    container_name: supportpilot_frontend_prod
+    restart: always
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    networks:
+      - supportpilot_prod_net
+
+  # ──────────────────────────────────────────────────────────
+  # 4. n8n Automation Engine (Production Workflow Runner)
+  # ──────────────────────────────────────────────────────────
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: supportpilot_n8n_prod
+    restart: always
+    environment:
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678/webhook}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?n8n encryption key required}
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168
+    volumes:
+      - n8n_prod_data:/home/node/.n8n
+    ports:
+      - "127.0.0.1:${N8N_PORT:-5678}:5678"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    networks:
+      - supportpilot_prod_net

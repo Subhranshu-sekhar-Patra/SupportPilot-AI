@@ -264,7 +264,7 @@ export default function KnowledgeBasePage() {
           <Search className="w-5 h-5 text-brand-600" /> RAG Semantic Search Playground
         </h2>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-          Test semantic retrieval against your organization's vector store in ChromaDB.
+          Test semantic retrieval against your organization&apos;s vector store in ChromaDB.
         </p>
 
         <form onSubmit={handleSearch} className="flex gap-3 mb-6">

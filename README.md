@@ -236,11 +236,24 @@ Response:
 }
 ```
 
-### Running Backend Tests
+### Running Test Suites
 ```bash
+# 1. Frontend Linting & Type Checking
+cd frontend
+pnpm type-check
+pnpm lint
+
+# 2. Backend Automated Test Suite (37 tests across AI, RAG, Webhooks, Auth, Human Support, Analytics)
 cd backend
 python -m pytest -v
 ```
+
+---
+
+## 🚀 Production Deployment & Operations
+
+- **Production Deployment Runbook:** See [`DEPLOYMENT.md`](file:///DEPLOYMENT.md) for full instructions on launching with `docker-compose.prod.yml`, Nginx reverse proxy, and Let's Encrypt SSL.
+- **Database Backup & Disaster Recovery:** See [`docs/BACKUP_AND_RESTORE.md`](file:///docs/BACKUP_AND_RESTORE.md) for automated backup scripts (`scripts/backup_db.sh`), point-in-time recovery, and cloud replication.
 
 ---
 
@@ -249,6 +262,7 @@ python -m pytest -v
 | Variable | Description | Default |
 |---|---|---|
 | `APP_ENV` | Application environment (`development` / `production`) | `development` |
+| `LOG_FORMAT` | Log format (`text` / `json`) | `text` (auto `json` in prod) |
 | `SECRET_KEY` | 32+ character key for JWT signature | Must be set |
 | `DATABASE_URL` | Async PostgreSQL connection string | `postgresql+asyncpg://...` |
 | `DATABASE_URL_SYNC` | Synchronous connection string for Alembic | `postgresql://...` |
@@ -256,4 +270,5 @@ python -m pytest -v
 | `POSTGRES_PASSWORD` | PostgreSQL password | `supportpilot_password` |
 | `POSTGRES_DB` | PostgreSQL database name | `supportpilot` |
 | `NEXT_PUBLIC_API_URL` | Backend URL accessible from frontend | `http://localhost:8000` |
-| `GEMINI_API_KEY` | Google Gemini API key (for future AI phases) | Optional for Phase 1 |
+| `GEMINI_API_KEY` | Google Gemini API key for RAG & AI agents | Must be set |
+| `N8N_API_KEY` | HMAC shared secret for n8n webhooks | Must be set |

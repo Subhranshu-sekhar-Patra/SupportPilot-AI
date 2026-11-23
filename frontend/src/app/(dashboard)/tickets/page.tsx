@@ -354,7 +354,7 @@ export default function TicketsPage() {
                     </div>
                   </div>
                   <p className="text-xs text-gray-600 dark:text-gray-300 leading-relaxed italic bg-white/70 dark:bg-gray-800/70 p-3 rounded-xl">
-                    "{selectedTicket.aiSuggestedResponse}"
+                    &ldquo;{selectedTicket.aiSuggestedResponse}&rdquo;
                   </p>
                 </div>
               )}
