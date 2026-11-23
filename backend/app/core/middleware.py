@@ -90,3 +90,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         _rate_counters[client_ip].append(now)
         return await call_next(request)
+
+
+def reset_rate_limiters() -> None:
+    """Clear in-memory rate limit tracking counters (used by test suites)."""
+    _rate_counters.clear()
+    _auth_rate_counters.clear()

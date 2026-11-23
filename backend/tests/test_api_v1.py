@@ -384,3 +384,5 @@ async def test_auth_rate_limiting():
 
         # The initial requests should fail with 401 (invalid creds), but request 11+ must be rate-limited (429)
         assert 429 in status_codes
+        from app.core.middleware import reset_rate_limiters
+        reset_rate_limiters()

@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     chroma_host: str = "localhost"
     chroma_port: int = 8000
     chroma_collection_name: str = "supportpilot_docs"
+    chroma_persist_dir: str = "./chroma_data"
 
     # ── AI Provider (configured for future phases) ──────────
     default_ai_provider: str = "gemini"
