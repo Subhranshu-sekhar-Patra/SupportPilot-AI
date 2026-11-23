@@ -111,7 +111,7 @@ class Ticket(UUIDMixin, TimestampMixin, Base):
         back_populates="assigned_tickets",
     )
     messages: Mapped[list["TicketMessage"]] = relationship(
-        "TicketMessage", back_populates="ticket", cascade="all, delete-orphan"
+        "TicketMessage", back_populates="ticket", cascade="all, delete-orphan", lazy="selectin"
     )
 
     def __repr__(self) -> str:

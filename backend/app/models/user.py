@@ -58,7 +58,7 @@ class User(UUIDMixin, TimestampMixin, Base):
 
     # ── Relationships ──────────────────────────────────────
     organization: Mapped["Organization"] = relationship(  # noqa: F821
-        "Organization", back_populates="users"
+        "Organization", back_populates="users", lazy="selectin"
     )
     assigned_tickets: Mapped[list["Ticket"]] = relationship(  # noqa: F821
         "Ticket",

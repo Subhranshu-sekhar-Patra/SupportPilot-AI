@@ -5,13 +5,14 @@ Mounts all v1 sub-routers in one place.
 
 from fastapi import APIRouter
 
-from app.api.v1 import auth, tickets, agents, webhooks, analytics, knowledge
+from app.api.v1 import auth, tickets, agents, webhooks, analytics, knowledge, organizations
 
 api_router = APIRouter()
 
 # Version prefix
 v1_router = APIRouter(prefix="/v1")
 v1_router.include_router(auth.router)
+v1_router.include_router(organizations.router)
 v1_router.include_router(tickets.router)
 v1_router.include_router(knowledge.router)
 v1_router.include_router(agents.router)

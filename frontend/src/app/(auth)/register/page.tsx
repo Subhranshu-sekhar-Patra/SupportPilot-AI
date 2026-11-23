@@ -8,6 +8,13 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Bot, Loader2, ArrowRight } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
+import { apiClient } from "@/lib/api";
+import type { User, AuthTokens } from "@/types";
+
+interface AuthResponseData {
+  user: User;
+  tokens: AuthTokens;
+}
 
 const registerSchema = z.object({
   full_name: z.string().min(2, "Name must be at least 2 characters"),
@@ -33,31 +40,18 @@ export default function RegisterPage() {
   } = useForm<RegisterFormData>({ resolver: zodResolver(registerSchema) });
 
   const onSubmit = async (data: RegisterFormData) => {
-    await new Promise((r) => setTimeout(r, 600));
-    setAuth(
-      {
-        id: "usr_new_registered",
-        email: data.email,
-        full_name: data.full_name,
-        role: "owner",
-        is_active: true,
-        is_verified: true,
-        organization: {
-          id: "org_new_org",
-          name: data.organization_name,
-          slug: data.organization_name.toLowerCase().replace(/[^a-z0-9]/g, "-"),
-          plan: "Trial (14 days)",
-        },
-      },
-      {
-        access_token: "demo_access_token",
-        refresh_token: "demo_refresh_token",
-        token_type: "bearer",
-        expires_in: 3600,
-      }
-    );
-    toast.success("Workspace created! Welcome to SupportPilot AI.");
-    router.push("/");
+    try {
+      const res = await apiClient.post<AuthResponseData>("/auth/register", data);
+      setAuth(res.data.user, res.data.tokens);
+      toast.success("Workspace created! Welcome to SupportPilot AI.");
+      router.push("/");
+    } catch (err: any) {
+      const message =
+        err.response?.data?.error?.message ||
+        err.response?.data?.detail ||
+        "Registration failed. Please check your details and try again.";
+      toast.error(message);
+    }
   };
 
   return (

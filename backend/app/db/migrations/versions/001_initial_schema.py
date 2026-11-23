@@ -36,10 +36,27 @@ def upgrade() -> None:
     op.create_index(op.f('ix_organizations_id'), 'organizations', ['id'], unique=False)
     op.create_index(op.f('ix_organizations_slug'), 'organizations', ['slug'], unique=True)
 
-    # ── Users ──────────────────────────────────────────────────
-    userrole_enum = sa.Enum('OWNER', 'ADMIN', 'AGENT', 'VIEWER', name='userrole')
-    userrole_enum.create(op.get_bind(), checkfirst=True)
+    # ── Enums ──────────────────────────────────────────────────
+    bind = op.get_bind()
+    userrole_enum = postgresql.ENUM('OWNER', 'ADMIN', 'AGENT', 'VIEWER', name='userrole')
+    userrole_enum.create(bind, checkfirst=True)
 
+    ticketstatus_enum = postgresql.ENUM('OPEN', 'ASSIGNED', 'IN_PROGRESS', 'PENDING_REVIEW', 'ESCALATED', 'RESOLVED', 'CLOSED', name='ticketstatus')
+    ticketstatus_enum.create(bind, checkfirst=True)
+
+    ticketpriority_enum = postgresql.ENUM('LOW', 'MEDIUM', 'HIGH', 'URGENT', name='ticketpriority')
+    ticketpriority_enum.create(bind, checkfirst=True)
+
+    ticketchannel_enum = postgresql.ENUM('EMAIL', 'CHAT', 'API', 'WEBHOOK', 'PORTAL', name='ticketchannel')
+    ticketchannel_enum.create(bind, checkfirst=True)
+
+    messageauthortype_enum = postgresql.ENUM('CUSTOMER', 'AGENT', 'AI', 'SYSTEM', name='messageauthortype')
+    messageauthortype_enum.create(bind, checkfirst=True)
+
+    documentstatus_enum = postgresql.ENUM('PENDING', 'PROCESSING', 'INDEXED', 'FAILED', name='documentstatus')
+    documentstatus_enum.create(bind, checkfirst=True)
+
+    # ── Users ──────────────────────────────────────────────────
     op.create_table(
         'users',
         sa.Column('id', sa.String(length=36), nullable=False),
@@ -49,7 +66,7 @@ def upgrade() -> None:
         sa.Column('avatar_url', sa.String(length=500), nullable=True),
         sa.Column('is_active', sa.Boolean(), nullable=False, server_default='true'),
         sa.Column('is_verified', sa.Boolean(), nullable=False, server_default='false'),
-        sa.Column('role', sa.Enum('OWNER', 'ADMIN', 'AGENT', 'VIEWER', name='userrole'), nullable=False),
+        sa.Column('role', postgresql.ENUM('OWNER', 'ADMIN', 'AGENT', 'VIEWER', name='userrole', create_type=False), nullable=False),
         sa.Column('organization_id', sa.String(length=36), nullable=False),
         sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
@@ -61,23 +78,14 @@ def upgrade() -> None:
     op.create_index(op.f('ix_users_organization_id'), 'users', ['organization_id'], unique=False)
 
     # ── Tickets ────────────────────────────────────────────────
-    ticketstatus_enum = sa.Enum('OPEN', 'ASSIGNED', 'IN_PROGRESS', 'PENDING_REVIEW', 'ESCALATED', 'RESOLVED', 'CLOSED', name='ticketstatus')
-    ticketstatus_enum.create(op.get_bind(), checkfirst=True)
-
-    ticketpriority_enum = sa.Enum('LOW', 'MEDIUM', 'HIGH', 'URGENT', name='ticketpriority')
-    ticketpriority_enum.create(op.get_bind(), checkfirst=True)
-
-    ticketchannel_enum = sa.Enum('EMAIL', 'CHAT', 'API', 'WEBHOOK', 'PORTAL', name='ticketchannel')
-    ticketchannel_enum.create(op.get_bind(), checkfirst=True)
-
     op.create_table(
         'tickets',
         sa.Column('id', sa.String(length=36), nullable=False),
         sa.Column('subject', sa.String(length=500), nullable=False),
         sa.Column('description', sa.Text(), nullable=False),
-        sa.Column('status', sa.Enum('OPEN', 'ASSIGNED', 'IN_PROGRESS', 'PENDING_REVIEW', 'ESCALATED', 'RESOLVED', 'CLOSED', name='ticketstatus'), nullable=False),
-        sa.Column('priority', sa.Enum('LOW', 'MEDIUM', 'HIGH', 'URGENT', name='ticketpriority'), nullable=False),
-        sa.Column('channel', sa.Enum('EMAIL', 'CHAT', 'API', 'WEBHOOK', 'PORTAL', name='ticketchannel'), nullable=False),
+        sa.Column('status', postgresql.ENUM('OPEN', 'ASSIGNED', 'IN_PROGRESS', 'PENDING_REVIEW', 'ESCALATED', 'RESOLVED', 'CLOSED', name='ticketstatus', create_type=False), nullable=False),
+        sa.Column('priority', postgresql.ENUM('LOW', 'MEDIUM', 'HIGH', 'URGENT', name='ticketpriority', create_type=False), nullable=False),
+        sa.Column('channel', postgresql.ENUM('EMAIL', 'CHAT', 'API', 'WEBHOOK', 'PORTAL', name='ticketchannel', create_type=False), nullable=False),
         sa.Column('customer_name', sa.String(length=255), nullable=True),
         sa.Column('customer_email', sa.String(length=255), nullable=True),
         sa.Column('ai_category', sa.String(length=100), nullable=True),
@@ -104,16 +112,16 @@ def upgrade() -> None:
     op.create_index(op.f('ix_tickets_organization_id'), 'tickets', ['organization_id'], unique=False)
     op.create_index(op.f('ix_tickets_priority'), 'tickets', ['priority'], unique=False)
     op.create_index(op.f('ix_tickets_status'), 'tickets', ['status'], unique=False)
+    # Composite indexes for multi-tenant query performance & SLA queries
+    op.create_index('ix_tickets_org_status', 'tickets', ['organization_id', 'status'], unique=False)
+    op.create_index('ix_tickets_org_created', 'tickets', ['organization_id', 'created_at'], unique=False)
 
     # ── Ticket Messages ────────────────────────────────────────
-    messageauthortype_enum = sa.Enum('CUSTOMER', 'AGENT', 'AI', 'SYSTEM', name='messageauthortype')
-    messageauthortype_enum.create(op.get_bind(), checkfirst=True)
-
     op.create_table(
         'ticket_messages',
         sa.Column('id', sa.String(length=36), nullable=False),
         sa.Column('ticket_id', sa.String(length=36), nullable=False),
-        sa.Column('author_type', sa.Enum('CUSTOMER', 'AGENT', 'AI', 'SYSTEM', name='messageauthortype'), nullable=False),
+        sa.Column('author_type', postgresql.ENUM('CUSTOMER', 'AGENT', 'AI', 'SYSTEM', name='messageauthortype', create_type=False), nullable=False),
         sa.Column('author_id', sa.String(length=36), nullable=True),
         sa.Column('content', sa.Text(), nullable=False),
         sa.Column('is_internal', sa.Boolean(), nullable=False, server_default='false'),
@@ -125,11 +133,9 @@ def upgrade() -> None:
     )
     op.create_index(op.f('ix_ticket_messages_id'), 'ticket_messages', ['id'], unique=False)
     op.create_index(op.f('ix_ticket_messages_ticket_id'), 'ticket_messages', ['ticket_id'], unique=False)
+    op.create_index('ix_messages_ticket_created', 'ticket_messages', ['ticket_id', 'created_at'], unique=False)
 
     # ── Knowledge Documents ────────────────────────────────────
-    documentstatus_enum = sa.Enum('PENDING', 'PROCESSING', 'INDEXED', 'FAILED', name='documentstatus')
-    documentstatus_enum.create(op.get_bind(), checkfirst=True)
-
     op.create_table(
         'knowledge_documents',
         sa.Column('id', sa.String(length=36), nullable=False),
@@ -138,7 +144,7 @@ def upgrade() -> None:
         sa.Column('file_type', sa.String(length=50), nullable=False),
         sa.Column('file_size_bytes', sa.Integer(), nullable=False),
         sa.Column('storage_path', sa.String(length=500), nullable=False),
-        sa.Column('status', sa.Enum('PENDING', 'PROCESSING', 'INDEXED', 'FAILED', name='documentstatus'), nullable=False),
+        sa.Column('status', postgresql.ENUM('PENDING', 'PROCESSING', 'INDEXED', 'FAILED', name='documentstatus', create_type=False), nullable=False),
         sa.Column('chunk_count', sa.Integer(), nullable=False, server_default='0'),
         sa.Column('error_message', sa.Text(), nullable=True),
         sa.Column('chroma_ids', sa.JSON(), nullable=True),
@@ -155,6 +161,7 @@ def upgrade() -> None:
     op.create_index(op.f('ix_knowledge_documents_id'), 'knowledge_documents', ['id'], unique=False)
     op.create_index(op.f('ix_knowledge_documents_organization_id'), 'knowledge_documents', ['organization_id'], unique=False)
     op.create_index(op.f('ix_knowledge_documents_status'), 'knowledge_documents', ['status'], unique=False)
+    op.create_index('ix_docs_org_status', 'knowledge_documents', ['organization_id', 'status'], unique=False)
 
     # ── Audit Logs ─────────────────────────────────────────────
     op.create_table(
@@ -189,9 +196,10 @@ def downgrade() -> None:
     op.drop_table('users')
     op.drop_table('organizations')
     
-    sa.Enum(name='documentstatus').drop(op.get_bind(), checkfirst=True)
-    sa.Enum(name='messageauthortype').drop(op.get_bind(), checkfirst=True)
-    sa.Enum(name='ticketchannel').drop(op.get_bind(), checkfirst=True)
-    sa.Enum(name='ticketpriority').drop(op.get_bind(), checkfirst=True)
-    sa.Enum(name='ticketstatus').drop(op.get_bind(), checkfirst=True)
-    sa.Enum(name='userrole').drop(op.get_bind(), checkfirst=True)
+    bind = op.get_bind()
+    postgresql.ENUM(name='documentstatus').drop(bind, checkfirst=True)
+    postgresql.ENUM(name='messageauthortype').drop(bind, checkfirst=True)
+    postgresql.ENUM(name='ticketchannel').drop(bind, checkfirst=True)
+    postgresql.ENUM(name='ticketpriority').drop(bind, checkfirst=True)
+    postgresql.ENUM(name='ticketstatus').drop(bind, checkfirst=True)
+    postgresql.ENUM(name='userrole').drop(bind, checkfirst=True)

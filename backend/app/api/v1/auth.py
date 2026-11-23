@@ -59,6 +59,19 @@ async def refresh_token(
     return await AuthService(db).refresh_tokens(data.refresh_token)
 
 
+@router.post(
+    "/change-password",
+    status_code=204,
+    summary="Change password for current authenticated user",
+)
+async def change_password(
+    data: ChangePasswordRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await AuthService(db).change_password(current_user.id, data)
+
+
 @router.get(
     "/me",
     response_model=UserResponse,

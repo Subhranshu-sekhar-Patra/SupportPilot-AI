@@ -71,6 +71,7 @@ class Settings(BaseSettings):
 
     # ── Rate Limiting ──────────────────────────────────────
     rate_limit_per_minute: int = 60
+    rate_limit_auth_per_minute: int = 10
 
     # ── Derived properties ─────────────────────────────────
     @property

@@ -20,7 +20,15 @@ from app.core.security import (
 )
 from app.models.organization import Organization
 from app.models.user import User, UserRole
-from app.schemas.auth import RegisterRequest, LoginRequest, AuthResponse, TokenResponse, UserResponse, OrganizationResponse
+from app.schemas.auth import (
+    RegisterRequest,
+    LoginRequest,
+    ChangePasswordRequest,
+    AuthResponse,
+    TokenResponse,
+    UserResponse,
+    OrganizationResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -97,6 +105,15 @@ class AuthService:
             refresh_token=create_refresh_token(user.id),
             expires_in=settings.access_token_expire_minutes * 60,
         )
+
+    async def change_password(self, user_id: str, data: ChangePasswordRequest) -> None:
+        user = await self.get_user_by_id(user_id)
+        if not verify_password(data.current_password, user.hashed_password):
+            raise AuthenticationError("Current password is incorrect")
+
+        user.hashed_password = hash_password(data.new_password)
+        await self.db.commit()
+        logger.info("password_changed", user_id=user_id)
 
     async def get_user_by_id(self, user_id: str) -> User:
         result = await self.db.execute(

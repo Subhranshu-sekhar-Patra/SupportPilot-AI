@@ -9,6 +9,13 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Bot, Eye, EyeOff, Loader2, Sparkles, ArrowRight } from "lucide-react";
 import { useAuthStore } from "@/store/auth";
+import { apiClient } from "@/lib/api";
+import type { User, AuthTokens } from "@/types";
+
+interface AuthResponseData {
+  user: User;
+  tokens: AuthTokens;
+}
 
 const loginSchema = z.object({
   email: z.string().email("Please enter a valid work email"),
@@ -36,11 +43,18 @@ export default function LoginPage() {
   });
 
   const onSubmit = async (data: LoginFormData) => {
-    // Phase 2 realistic client login simulation
-    await new Promise((r) => setTimeout(r, 600));
-    loginAsDemo();
-    toast.success("Welcome back, Alex Turner!");
-    router.push("/");
+    try {
+      const res = await apiClient.post<AuthResponseData>("/auth/login", data);
+      setAuth(res.data.user, res.data.tokens);
+      toast.success(`Welcome back, ${res.data.user.full_name}!`);
+      router.push("/");
+    } catch (err: any) {
+      const message =
+        err.response?.data?.error?.message ||
+        err.response?.data?.detail ||
+        "Invalid email or password. You can also use Quick Demo below.";
+      toast.error(message);
+    }
   };
 
   const handleQuickDemo = () => {

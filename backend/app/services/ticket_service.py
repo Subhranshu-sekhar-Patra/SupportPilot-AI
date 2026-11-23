@@ -15,6 +15,7 @@ from app.models.ticket import (
     MessageAuthorType,
     Ticket,
     TicketMessage,
+    TicketPriority,
     TicketStatus,
 )
 from app.models.user import User, UserRole
@@ -75,10 +76,8 @@ class TicketService:
         )
         self.db.add(initial_msg)
         await self.db.commit()
-        await self.db.refresh(ticket)
-
         logger.info("ticket_created", ticket_id=ticket.id, org_id=self.org_id)
-        return TicketResponse.model_validate(ticket)
+        return await self.get_ticket(ticket.id)
 
     async def get_ticket(self, ticket_id: str) -> TicketResponse:
         """Get a single ticket by ID, enforcing org scope."""
@@ -90,6 +89,8 @@ class TicketService:
         page: int = 1,
         page_size: int = 20,
         status: TicketStatus | None = None,
+        priority: TicketPriority | None = None,
+        category: str | None = None,
         assigned_to_me: bool = False,
     ) -> TicketListResponse:
         """Paginated, filterable ticket list scoped to org."""
@@ -101,6 +102,10 @@ class TicketService:
         )
         if status:
             query = query.where(Ticket.status == status)
+        if priority:
+            query = query.where(Ticket.priority == priority)
+        if category:
+            query = query.where(Ticket.ai_category == category)
         if assigned_to_me:
             query = query.where(Ticket.assigned_to_id == self.user.id)
 
@@ -151,9 +156,8 @@ class TicketService:
                 ticket.status = TicketStatus.ASSIGNED
 
         await self.db.commit()
-        await self.db.refresh(ticket)
         logger.info("ticket_updated", ticket_id=ticket_id)
-        return TicketResponse.model_validate(ticket)
+        return await self.get_ticket(ticket.id)
 
     async def add_message(
         self, ticket_id: str, data: AddMessageRequest, is_ai: bool = False
@@ -170,8 +174,24 @@ class TicketService:
         )
         self.db.add(msg)
         await self.db.commit()
-        await self.db.refresh(ticket)
-        return TicketResponse.model_validate(ticket)
+        return await self.get_ticket(ticket.id)
+
+    async def get_messages(self, ticket_id: str) -> list[TicketMessage]:
+        """Get all messages in a ticket conversation thread, verifying org access."""
+        ticket = await self._get_ticket_or_404(ticket_id)
+        result = await self.db.execute(
+            select(TicketMessage)
+            .where(TicketMessage.ticket_id == ticket.id)
+            .order_by(TicketMessage.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def delete_ticket(self, ticket_id: str) -> None:
+        """Delete/archive a ticket from the organization."""
+        ticket = await self._get_ticket_or_404(ticket_id)
+        await self.db.delete(ticket)
+        await self.db.commit()
+        logger.info("ticket_deleted", ticket_id=ticket_id, org_id=self.org_id)
 
     # ── Helpers ────────────────────────────────────────────
 
