@@ -193,6 +193,42 @@ class TicketService:
         await self.db.commit()
         logger.info("ticket_deleted", ticket_id=ticket_id, org_id=self.org_id)
 
+    async def process_ai(
+        self,
+        ticket_id: str,
+        auto_reply: bool = True,
+        llm_override=None,
+    ):
+        """
+        Run the complete SupportPilot AI workflow:
+        Classification → RAG Retrieval → Generation → Evaluation → AI Response / Escalation.
+        """
+        ticket = await self._get_ticket_or_404(ticket_id)
+        from app.ai.orchestrator import AgentOrchestrator
+        orchestrator = AgentOrchestrator(org_id=self.org_id, llm=llm_override)
+        result = await orchestrator.process_and_persist_ticket(
+            db=self.db, ticket=ticket, auto_reply=auto_reply
+        )
+        return result
+
+    async def classify_ticket(
+        self,
+        ticket_id: str,
+        llm_override=None,
+    ):
+        """Run standalone query classification."""
+        ticket = await self._get_ticket_or_404(ticket_id)
+        from app.ai.agents.classifier import ClassifierAgent
+        from app.ai.providers.gemini import get_llm_provider
+        llm = llm_override or get_llm_provider()
+        classifier = ClassifierAgent(llm)
+        output = await classifier.classify(ticket.subject, ticket.description)
+        ticket.ai_category = output.category.value
+        ticket.ai_confidence_score = output.confidence
+        await self.db.commit()
+        await self.db.refresh(ticket)
+        return output
+
     # ── Helpers ────────────────────────────────────────────
 
     async def _get_ticket_or_404(self, ticket_id: str) -> Ticket:

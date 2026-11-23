@@ -2,9 +2,10 @@
 SupportPilot AI — Google Gemini LLM Provider Implementation
 """
 
+import json
 from typing import AsyncIterator
+from tenacity import retry, retry_if_not_exception_type, stop_after_attempt, wait_exponential
 
-from tenacity import retry, stop_after_attempt, wait_exponential
 try:
     import google.generativeai as genai
     HAS_GENAI = True
@@ -16,27 +17,27 @@ except ImportError:
         genai = None
         HAS_GENAI = False
 
-from app.core.logger import get_logger
 from app.ai.providers.base import (
     CompletionOptions,
     CompletionResult,
     LLMProvider,
     Message,
 )
+from app.ai.providers.mock import MockLLMProvider
 from app.config import settings
 from app.core.exceptions import AIProviderError
+from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Default options for Gemini
-_DEFAULT_OPTIONS = CompletionOptions(temperature=0.3, max_tokens=2048)
+_DEFAULT_OPTIONS = CompletionOptions(temperature=0.2, max_tokens=2048)
 
 
 class GeminiProvider(LLMProvider):
     """
     Google Gemini implementation of LLMProvider.
-    Uses the google-generativeai SDK.
-    API key is read from settings (never hardcoded).
+    Uses google-generativeai SDK.
+    API key is read securely from settings (never hardcoded).
     """
 
     def __init__(
@@ -47,7 +48,6 @@ class GeminiProvider(LLMProvider):
         self.model_name = model
         self.embedding_model_name = embedding_model
 
-        # Configure the SDK if available
         if HAS_GENAI and settings.gemini_api_key and genai is not None:
             try:
                 genai.configure(api_key=settings.gemini_api_key)
@@ -75,17 +75,20 @@ class GeminiProvider(LLMProvider):
         options: CompletionOptions | None = None,
     ) -> CompletionResult:
         """Generate a completion using Gemini."""
+        if not self._model:
+            raise AIProviderError("Gemini provider is not configured. Check GEMINI_API_KEY.")
+
         opts = options or _DEFAULT_OPTIONS
         try:
-            # Build Gemini-compatible contents list
             contents = self._messages_to_contents(messages)
 
-            generation_config = genai.types.GenerationConfig(
-                temperature=opts.temperature,
-                max_output_tokens=opts.max_tokens,
-                top_p=opts.top_p,
-                stop_sequences=opts.stop_sequences or None,
-            )
+            generation_config = {
+                "temperature": opts.temperature,
+                "max_output_tokens": opts.max_tokens,
+                "top_p": opts.top_p,
+            }
+            if opts.response_mime_type:
+                generation_config["response_mime_type"] = opts.response_mime_type
 
             response = await self._model.generate_content_async(
                 contents=contents,
@@ -95,7 +98,7 @@ class GeminiProvider(LLMProvider):
             if not response.text:
                 raise AIProviderError("Gemini returned empty response")
 
-            usage = response.usage_metadata
+            usage = getattr(response, "usage_metadata", None)
             return CompletionResult(
                 content=response.text,
                 model=self.model_name,
@@ -106,7 +109,11 @@ class GeminiProvider(LLMProvider):
         except AIProviderError:
             raise
         except Exception as e:
-            logger.error("gemini_completion_error", error=str(e))
+            err_msg = str(e)
+            if "ResourceExhausted" in err_msg or "429" in err_msg:
+                logger.error("gemini_quota_exhausted", error=err_msg)
+                raise AIProviderError(f"Gemini API quota exhausted: {err_msg}") from e
+            logger.error("gemini_completion_error", error=err_msg)
             raise AIProviderError(f"Gemini completion failed: {e}") from e
 
     async def stream(
@@ -115,13 +122,16 @@ class GeminiProvider(LLMProvider):
         options: CompletionOptions | None = None,
     ) -> AsyncIterator[str]:
         """Stream response tokens from Gemini."""
+        if not self._model:
+            raise AIProviderError("Gemini provider is not configured.")
+
         opts = options or _DEFAULT_OPTIONS
         try:
             contents = self._messages_to_contents(messages)
-            generation_config = genai.types.GenerationConfig(
-                temperature=opts.temperature,
-                max_output_tokens=opts.max_tokens,
-            )
+            generation_config = {
+                "temperature": opts.temperature,
+                "max_output_tokens": opts.max_tokens,
+            }
 
             response = await self._model.generate_content_async(
                 contents=contents,
@@ -179,11 +189,20 @@ class GeminiProvider(LLMProvider):
         return contents
 
 
-def get_llm_provider() -> LLMProvider:
+def get_llm_provider(provider_name: str | None = None) -> LLMProvider:
     """
     Factory that returns the configured LLM provider.
-    Extend this to support multiple providers based on settings.
+    Defaults to Gemini if configured, or MockLLMProvider for offline/test environments.
     """
-    if settings.default_ai_provider == "gemini":
-        return GeminiProvider()
-    raise ValueError(f"Unsupported AI provider: {settings.default_ai_provider}")
+    provider = provider_name or settings.default_ai_provider
+
+    if provider == "mock":
+        return MockLLMProvider()
+
+    if provider == "gemini":
+        if settings.gemini_api_key:
+            return GeminiProvider()
+        logger.info("gemini_key_missing_falling_back_to_mock")
+        return MockLLMProvider()
+
+    raise ValueError(f"Unsupported AI provider: {provider}")

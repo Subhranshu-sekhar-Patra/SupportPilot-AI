@@ -1,45 +1,40 @@
 """
-SupportPilot AI — Response Generator Agent
-Generates a helpful, empathetic support response using retrieved context.
+SupportPilot AI — Response Generation Agent
+Generates strictly grounded customer support responses with inline document citations.
+Never invents company policies or makes unsupported promises.
 """
 
-from dataclasses import dataclass
-
+from app.ai.providers.base import CompletionOptions, LLMProvider, Message
 from app.core.logger import get_logger
-from app.ai.providers.base import LLMProvider, Message, CompletionOptions
+from app.schemas.ai import GenerationOutput, RetrievalAssessment
 
 logger = get_logger(__name__)
 
-_GENERATOR_SYSTEM_PROMPT = """You are a helpful, empathetic, and professional customer support specialist.
-Your job is to draft a response to a customer support ticket.
+_GENERATOR_SYSTEM_PROMPT = """You are SupportPilot AI, an expert enterprise customer support assistant.
+Your absolute mandate is ACCURACY and STRICT GROUNDING.
 
-GUIDELINES:
-- Be concise but complete (aim for 150-300 words)
-- Start with empathy, then provide actionable solutions
-- Use the provided knowledge base context to answer accurately
-- If the context doesn't cover the issue fully, acknowledge that and offer escalation
-- Do not make up facts or policies not found in the context
-- Maintain a professional but friendly tone
-- End with an offer for further assistance
+STRICT GROUNDING RULES:
+1. SOURCE OF TRUTH: Use ONLY the provided Knowledge Base Context as your factual source of truth.
+2. ZERO FABRICATION: NEVER invent company policies, warranty windows, refund terms, pricing, or service guarantees.
+3. INLINE CITATIONS: For every factual claim or policy stated, you MUST include an inline citation in the exact format:
+   [Doc: <Document Title> #<chunk_number>].
+4. MISSING INFORMATION: If the provided Knowledge Base Context does NOT contain the answer, explicitly state that you do not have the complete policy on file and that a human support specialist will verify and assist them.
+5. EMPATHY & PROFESSIONALISM: Maintain a courteous, calm, empathetic, and professional tone.
+6. NO UNSUPPORTED PROMISES: Never promise discounts, exceptions, or specific timelines unless explicitly written in the context.
 
-You will receive:
-1. The customer's ticket details
-2. Relevant knowledge base context
+Output your response matching the GenerationOutput schema:
+- "response_text": The customer-facing reply with greetings, actionable guidance, and inline citations.
+- "confidence_score": float 0.0 to 1.0 representing confidence in answer groundedness.
+- "citations": list of strings citing the document titles used (e.g. ["Acme Refund Policy #0"]).
+- "has_missing_info": boolean (true if context was incomplete).
+- "unanswered_questions": list of customer questions that couldn't be confirmed by context.
+- "suggested_action": "reply_to_customer" or "escalate_to_human".
 """
-
-
-@dataclass
-class GeneratedResponse:
-    response_text: str
-    model_used: str
-    input_tokens: int
-    output_tokens: int
-    context_sources: list[str]
 
 
 class GeneratorAgent:
     """
-    Generates a draft support response using RAG context.
+    Generates verified, grounded responses for customer tickets.
     """
 
     def __init__(self, llm: LLMProvider):
@@ -49,66 +44,73 @@ class GeneratorAgent:
         self,
         subject: str,
         description: str,
-        context: str,
-        source_documents: list[str],
+        retrieval: RetrievalAssessment,
         customer_name: str | None = None,
         conversation_history: list[dict] | None = None,
-    ) -> GeneratedResponse:
+    ) -> GenerationOutput:
         """
-        Generate a response to a support ticket.
-
-        Args:
-            subject:              Ticket subject
-            description:          Ticket description
-            context:              Formatted RAG context from retriever
-            source_documents:     List of source document titles
-            customer_name:        Customer's name (for personalization)
-            conversation_history: Prior messages in this ticket
-
-        Returns:
-            GeneratedResponse with the draft response text
+        Draft a response using strictly grounded knowledge base context.
         """
-        greeting = f"Dear {customer_name}," if customer_name else "Dear Customer,"
+        greeting_name = customer_name if customer_name else "Valued Customer"
 
-        user_prompt = (
-            f"CUSTOMER TICKET:\n"
-            f"Subject: {subject}\n"
-            f"Description: {description}\n\n"
-            f"{context}\n\n"
-            f"Please draft a response. Start with: '{greeting}'"
-        )
-
-        # Build conversation history context if available
-        messages: list[Message] = [
-            Message(role="system", content=_GENERATOR_SYSTEM_PROMPT),
+        # Build prompt
+        prompt_parts = [
+            f"CUSTOMER TICKET:",
+            f"Customer Name: {greeting_name}",
+            f"Subject: {subject}",
+            f"Inquiry: {description}\n",
         ]
 
-        # Include up to 3 prior messages for context
         if conversation_history:
-            for msg in conversation_history[-3:]:
-                messages.append(Message(
-                    role="user" if msg.get("author_type") == "customer" else "assistant",
-                    content=msg.get("content", ""),
-                ))
+            history_lines = [
+                f"{m.get('author_type', 'user').upper()}: {m.get('content', '')}"
+                for m in conversation_history[-4:]
+            ]
+            prompt_parts.append("CONVERSATION THREAD HISTORY:\n" + "\n".join(history_lines) + "\n")
 
-        messages.append(Message(role="user", content=user_prompt))
-
-        result = await self.llm.complete(
-            messages,
-            options=CompletionOptions(temperature=0.4, max_tokens=1024),
+        prompt_parts.append(f"AUTHORITATIVE KNOWLEDGE BASE CONTEXT:\n{retrieval.formatted_context}\n")
+        prompt_parts.append(
+            f"INSTRUCTIONS:\n"
+            f"Draft a response addressed to {greeting_name}. "
+            f"Include inline citations [Doc: <title> #<chunk>] for all facts. "
+            f"If context is missing or insufficient, state that a human agent will assist."
         )
 
-        logger.info(
-            "response_generated",
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            sources=source_documents,
-        )
+        user_content = "\n".join(prompt_parts)
 
-        return GeneratedResponse(
-            response_text=result.content.strip(),
-            model_used=result.model,
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            context_sources=source_documents,
-        )
+        messages = [
+            Message(role="system", content=_GENERATOR_SYSTEM_PROMPT),
+            Message(role="user", content=user_content),
+        ]
+
+        try:
+            output = await self.llm.complete_structured(
+                messages,
+                response_model=GenerationOutput,
+                options=CompletionOptions(temperature=0.2, max_tokens=1024),
+            )
+            logger.info(
+                "response_generated",
+                citations_count=len(output.citations),
+                confidence=output.confidence_score,
+                missing_info=output.has_missing_info,
+            )
+            return output
+
+        except Exception as e:
+            logger.error("generation_error_fallback", error=str(e))
+            # Safe grounded fallback
+            return GenerationOutput(
+                response_text=(
+                    f"Hello {greeting_name},\n\n"
+                    f"Thank you for contacting our customer support team regarding '{subject}'. "
+                    f"To ensure you receive the most accurate assistance, I have forwarded your ticket "
+                    f"to a support specialist who will review your details and follow up promptly.\n\n"
+                    f"Best regards,\nCustomer Support Team"
+                ),
+                confidence_score=0.4,
+                citations=[],
+                has_missing_info=True,
+                unanswered_questions=[description[:100]],
+                suggested_action="escalate_to_human",
+            )

@@ -44,7 +44,11 @@ async def override_db():
 
     app.dependency_overrides[get_db] = _test_get_db
 
+    from app.core.middleware import reset_rate_limiters
+    reset_rate_limiters()
+
     yield
 
+    reset_rate_limiters()
     app.dependency_overrides.clear()
     await test_engine.dispose()

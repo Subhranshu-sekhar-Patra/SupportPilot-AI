@@ -1,12 +1,22 @@
 """
 SupportPilot AI — Abstract LLM Provider Interface
 All AI providers must implement this interface.
-This decouples business logic from any specific AI vendor.
+This decouples business logic from any specific AI vendor (Gemini, OpenAI, Anthropic, Mock).
 """
 
+import json
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import AsyncIterator
+from typing import AsyncIterator, Type, TypeVar
+from pydantic import BaseModel, ValidationError
+
+from app.core.exceptions import AIProviderError
+from app.core.logger import get_logger
+
+logger = get_logger(__name__)
+
+T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass
@@ -19,10 +29,11 @@ class Message:
 @dataclass
 class CompletionOptions:
     """Options controlling how the LLM generates text."""
-    temperature: float = 0.3
+    temperature: float = 0.2
     max_tokens: int = 2048
     top_p: float = 0.95
     stop_sequences: list[str] = field(default_factory=list)
+    response_mime_type: str | None = None  # e.g. "application/json"
 
 
 @dataclass
@@ -38,7 +49,7 @@ class CompletionResult:
 class LLMProvider(ABC):
     """
     Abstract base class for LLM providers.
-    Implement this to add support for any AI backend (OpenAI, Gemini, Anthropic, etc.)
+    Implement this to add support for any AI backend.
     """
 
     @abstractmethod
@@ -49,15 +60,52 @@ class LLMProvider(ABC):
     ) -> CompletionResult:
         """
         Generate a text completion from a list of messages.
-
-        Args:
-            messages: Conversation history / prompt
-            options:  Generation parameters
-
-        Returns:
-            CompletionResult with generated text and usage metadata
         """
         ...
+
+    async def complete_structured(
+        self,
+        messages: list[Message],
+        response_model: Type[T],
+        options: CompletionOptions | None = None,
+    ) -> T:
+        """
+        Generate a completion and validate it against a Pydantic model.
+        Extracts JSON even if enclosed in markdown code fences.
+        """
+        opts = options or CompletionOptions(temperature=0.1, response_mime_type="application/json")
+        result = await self.complete(messages, opts)
+        raw_text = result.content.strip()
+
+        # Clean markdown code blocks if present
+        if "```json" in raw_text:
+            match = re.search(r"```json\s*(.*?)\s*```", raw_text, re.DOTALL)
+            if match:
+                raw_text = match.group(1).strip()
+        elif "```" in raw_text:
+            match = re.search(r"```\s*(.*?)\s*```", raw_text, re.DOTALL)
+            if match:
+                raw_text = match.group(1).strip()
+
+        try:
+            parsed_dict = json.loads(raw_text)
+            return response_model.model_validate(parsed_dict)
+        except (json.JSONDecodeError, ValidationError) as err:
+            logger.warning(
+                "structured_completion_validation_error",
+                error=str(err),
+                raw_preview=raw_text[:200],
+            )
+            # Try finding first JSON object substring { ... }
+            json_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+            if json_match:
+                try:
+                    return response_model.model_validate(json.loads(json_match.group(0)))
+                except Exception:
+                    pass
+            raise AIProviderError(
+                f"Failed to parse model output into {response_model.__name__}: {err}"
+            ) from err
 
     @abstractmethod
     async def stream(
@@ -65,36 +113,15 @@ class LLMProvider(ABC):
         messages: list[Message],
         options: CompletionOptions | None = None,
     ) -> AsyncIterator[str]:
-        """
-        Stream a text completion token by token.
-
-        Yields:
-            Text chunks as they arrive from the provider
-        """
+        """Stream a text completion token by token."""
         ...
 
     @abstractmethod
     async def embed(self, text: str) -> list[float]:
-        """
-        Generate an embedding vector for the given text.
-
-        Args:
-            text: Text to embed
-
-        Returns:
-            Embedding as a list of floats
-        """
+        """Generate an embedding vector for the given text."""
         ...
 
     @abstractmethod
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        """
-        Generate embeddings for multiple texts in a single call.
-
-        Args:
-            texts: List of texts to embed
-
-        Returns:
-            List of embedding vectors (same order as input)
-        """
+        """Generate embeddings for multiple texts."""
         ...

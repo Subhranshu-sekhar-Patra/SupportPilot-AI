@@ -1,48 +1,40 @@
 """
-SupportPilot AI — Response Evaluator Agent
-Scores the quality of a generated support response before it goes to the customer.
+SupportPilot AI — Response Quality Evaluation Agent
+Automated QA gatekeeper (LLM-as-a-Judge) that verifies groundedness,
+hallucination absence, relevance, and policy compliance before sending.
 """
 
-import json
-from dataclasses import dataclass
-
+from app.ai.providers.base import CompletionOptions, LLMProvider, Message
 from app.core.logger import get_logger
-from app.ai.providers.base import LLMProvider, Message, CompletionOptions
+from app.schemas.ai import EvaluationReport, EvaluationVerdict, GenerationOutput, RetrievalAssessment
 
 logger = get_logger(__name__)
 
-_EVALUATOR_SYSTEM_PROMPT = """You are a quality assurance specialist for customer support responses.
-Evaluate the given response and return a JSON object with:
-- "overall_score": float 0-1 (1 = excellent)
-- "accuracy_score": float 0-1 (factually correct based on context)
-- "empathy_score": float 0-1 (tone is empathetic and professional)
-- "completeness_score": float 0-1 (addresses the customer's issue fully)
-- "conciseness_score": float 0-1 (not too long, not too short)
-- "issues": list of strings describing specific problems (empty if none)
-- "suggestions": list of strings with improvement suggestions
-- "is_safe_to_send": boolean (true if response meets quality threshold)
+_EVALUATOR_SYSTEM_PROMPT = """You are the Senior QA and Safety Evaluator Agent for SupportPilot AI.
+Your job is to rigorously review the AI-generated support response against the Authoritative Knowledge Base Context and Customer Inquiry.
 
-Quality threshold for is_safe_to_send: overall_score >= 0.7 AND no critical accuracy issues.
+EVALUATION CRITERIA:
+1. GROUNDEDNESS / FAITHFULNESS (0.0 to 1.0):
+   - Is EVERY factual statement made in the response directly supported by the context?
+   - If the response invents policies, refunds, discounts, or deadlines NOT in the context, GROUNDEDNESS MUST BE < 0.50 and "hallucination_detected" MUST BE TRUE.
+2. RELEVANCE (0.0 to 1.0):
+   - Does the response directly address the customer's problem or acknowledge questions appropriately?
+3. TONE & POLITE COMPLIANCE (0.0 to 1.0):
+   - Is the tone empathetic, respectful, and professional?
+4. OVERALL SCORE (0.0 to 1.0):
+   - Weighted average: 0.50 * groundedness + 0.35 * relevance + 0.15 * tone.
+5. VERDICT:
+   - "approve": overall_score >= 0.70 AND hallucination_detected is false AND no unsupported claims.
+   - "escalate": overall_score < 0.70 OR hallucination_detected is true OR customer requested human.
+   - "revise": response is mostly grounded but needs formatting or minor citation fix.
 
-Return ONLY valid JSON."""
-
-
-@dataclass
-class EvaluationResult:
-    overall_score: float
-    accuracy_score: float
-    empathy_score: float
-    completeness_score: float
-    conciseness_score: float
-    issues: list[str]
-    suggestions: list[str]
-    is_safe_to_send: bool
+Output valid JSON matching the EvaluationReport schema.
+"""
 
 
 class EvaluatorAgent:
     """
-    Evaluates the quality of a generated support response.
-    Acts as an automated QA gate before responses reach customers.
+    Evaluates response quality, detecting hallucinations and unsupported promises.
     """
 
     def __init__(self, llm: LLMProvider):
@@ -52,66 +44,61 @@ class EvaluatorAgent:
         self,
         ticket_subject: str,
         ticket_description: str,
-        generated_response: str,
-        context: str,
-    ) -> EvaluationResult:
+        retrieval: RetrievalAssessment,
+        generation: GenerationOutput,
+    ) -> EvaluationReport:
         """
-        Score a generated response across multiple quality dimensions.
-
-        Args:
-            ticket_subject:      Original ticket subject
-            ticket_description:  Original ticket description
-            generated_response:  The AI-generated response to evaluate
-            context:             The RAG context used to generate the response
-
-        Returns:
-            EvaluationResult with scores and actionable feedback
+        Evaluate the generated response against the source context.
         """
-        evaluation_prompt = (
-            f"ORIGINAL TICKET:\n"
+        user_prompt = (
+            f"CUSTOMER INQUIRY:\n"
             f"Subject: {ticket_subject}\n"
             f"Description: {ticket_description}\n\n"
-            f"KNOWLEDGE BASE CONTEXT AVAILABLE:\n{context[:2000]}\n\n"
-            f"GENERATED RESPONSE TO EVALUATE:\n{generated_response}\n\n"
-            f"Evaluate the response quality."
+            f"AUTHORITATIVE KNOWLEDGE BASE CONTEXT:\n{retrieval.formatted_context[:2500]}\n\n"
+            f"GENERATED AI RESPONSE TO EVALUATE:\n{generation.response_text}\n\n"
+            f"Reported Citations: {generation.citations}\n"
+            f"Missing Info Flag: {generation.has_missing_info}\n\n"
+            f"Perform rigorous evaluation and output the EvaluationReport JSON."
         )
 
-        result = await self.llm.complete(
-            messages=[
-                Message(role="system", content=_EVALUATOR_SYSTEM_PROMPT),
-                Message(role="user", content=evaluation_prompt),
-            ],
-            options=CompletionOptions(temperature=0.1, max_tokens=1024),
-        )
+        messages = [
+            Message(role="system", content=_EVALUATOR_SYSTEM_PROMPT),
+            Message(role="user", content=user_prompt),
+        ]
 
         try:
-            parsed = json.loads(result.content.strip())
-            evaluation = EvaluationResult(
-                overall_score=float(parsed.get("overall_score", 0.5)),
-                accuracy_score=float(parsed.get("accuracy_score", 0.5)),
-                empathy_score=float(parsed.get("empathy_score", 0.5)),
-                completeness_score=float(parsed.get("completeness_score", 0.5)),
-                conciseness_score=float(parsed.get("conciseness_score", 0.5)),
-                issues=parsed.get("issues", []),
-                suggestions=parsed.get("suggestions", []),
-                is_safe_to_send=bool(parsed.get("is_safe_to_send", False)),
+            report = await self.llm.complete_structured(
+                messages,
+                response_model=EvaluationReport,
+                options=CompletionOptions(temperature=0.1, max_tokens=512),
             )
+
+            # Extra programmatic safety guard: If hallucination detected, force ESCALATE
+            if report.hallucination_detected or report.groundedness_score < 0.65:
+                report.verdict = EvaluationVerdict.ESCALATE
+                if not report.escalation_reason:
+                    report.escalation_reason = "Groundedness failure or hallucination detected in generated response."
+
             logger.info(
                 "response_evaluated",
-                overall_score=evaluation.overall_score,
-                is_safe_to_send=evaluation.is_safe_to_send,
+                overall=report.overall_score,
+                groundedness=report.groundedness_score,
+                relevance=report.relevance_score,
+                verdict=report.verdict.value,
+                hallucination=report.hallucination_detected,
             )
-            return evaluation
+            return report
 
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning("evaluation_parse_error", error=str(e))
-            return EvaluationResult(
-                overall_score=0.0,
-                accuracy_score=0.0,
-                empathy_score=0.0,
-                completeness_score=0.0,
-                conciseness_score=0.0,
-                issues=["Evaluation parsing failed"],
-                suggestions=["Manual review required"],
-                is_safe_to_send=False,
+        except Exception as e:
+            logger.warning("evaluator_fallback_triggered", error=str(e))
+            # Conservative safety fallback: route to human review
+            return EvaluationReport(
+                groundedness_score=0.5,
+                relevance_score=0.5,
+                tone_score=0.8,
+                overall_score=0.55,
+                hallucination_detected=False,
+                unsupported_claims=["Evaluation model failed to verify response."],
+                verdict=EvaluationVerdict.ESCALATE,
+                escalation_reason=f"Evaluation safety gate triggered: {e}",
             )

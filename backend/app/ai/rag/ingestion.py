@@ -55,6 +55,21 @@ class DocumentIngestionService:
             metadata={"organization_id": self.org_id, "hnsw:space": "cosine"},
         )
 
+    async def ingest_document(
+        self,
+        doc_id: str,
+        file_path: str,
+        title: str,
+        tags: list[str] | None = None,
+    ) -> list[str]:
+        """Convenience alias for ingest_file."""
+        return await self.ingest_file(
+            file_path=file_path,
+            document_id=doc_id,
+            document_title=title,
+            tags=tags,
+        )
+
     async def ingest_file(
         self,
         file_path: str,

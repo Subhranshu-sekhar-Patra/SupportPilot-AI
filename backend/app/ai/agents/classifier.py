@@ -1,97 +1,96 @@
 """
-SupportPilot AI — Ticket Classification Agent
-Categorizes support tickets and assigns priority using the LLM.
+SupportPilot AI — Query Classification Agent
+Classifies customer intent, urgency, sentiment, and flags immediate human escalation triggers.
 """
 
-import json
-from dataclasses import dataclass
-
+from app.ai.providers.base import CompletionOptions, LLMProvider, Message
 from app.core.logger import get_logger
-from app.ai.providers.base import LLMProvider, Message, CompletionOptions
+from app.schemas.ai import ClassificationOutput, CustomerSentiment, TicketCategory, TicketUrgency
 
 logger = get_logger(__name__)
 
-_CLASSIFIER_SYSTEM_PROMPT = """You are a customer support ticket classification expert.
-Analyze the provided ticket and return a JSON object with:
-- "category": one of [billing, technical, account, feature_request, bug_report, general_inquiry, security, compliance]
-- "priority": one of [low, medium, high, urgent]
-- "sentiment": one of [positive, neutral, negative, angry]
-- "confidence": float between 0 and 1
-- "reasoning": brief explanation (1-2 sentences)
+_CLASSIFIER_SYSTEM_PROMPT = """You are an expert customer support classification intelligence agent for SupportPilot AI.
+Analyze the incoming customer ticket and output a structured JSON evaluation matching this exact schema:
+- "category": one of ["billing", "technical", "account", "feature_request", "bug_report", "general_inquiry", "security", "compliance"]
+- "priority": one of ["low", "medium", "high", "urgent"]
+- "sentiment": one of ["positive", "neutral", "negative", "frustrated", "angry"]
+- "urgency_score": float 0.0 to 1.0 (1.0 = immediate emergency / outage / legal threat)
+- "requires_immediate_human": boolean. Must be true if:
+    * The customer is extremely angry, cursing, or threatening legal action/lawsuit.
+    * The customer explicitly demands a human agent, manager, or supervisor.
+    * The ticket involves a critical security vulnerability or compliance breach.
+- "confidence": float 0.0 to 1.0
+- "summary": 1-sentence concise description of the customer request.
+- "reasoning": 1-2 sentence justification for this classification.
 
-IMPORTANT: Return ONLY valid JSON — no markdown, no extra text.
+Return ONLY valid JSON matching the schema. No markdown formatting.
 """
-
-
-@dataclass
-class ClassificationResult:
-    category: str
-    priority: str
-    sentiment: str
-    confidence: float
-    reasoning: str
 
 
 class ClassifierAgent:
     """
-    Classifies a support ticket into a category and priority.
-    Uses the abstract LLM provider — not tied to any specific model.
+    Classifies support tickets and customer messages using the provider abstraction.
     """
 
     def __init__(self, llm: LLMProvider):
         self.llm = llm
 
-    async def classify(self, subject: str, description: str) -> ClassificationResult:
+    async def classify(
+        self,
+        subject: str,
+        description: str,
+        conversation_history: list[dict] | None = None,
+    ) -> ClassificationOutput:
         """
-        Classify a support ticket.
-
-        Args:
-            subject:     Ticket subject line
-            description: Full ticket description
-
-        Returns:
-            ClassificationResult with category, priority, confidence, etc.
+        Classify a customer support ticket.
         """
-        messages = [
-            Message(role="system", content=_CLASSIFIER_SYSTEM_PROMPT),
-            Message(
-                role="user",
-                content=(
-                    f"Ticket Subject: {subject}\n\n"
-                    f"Ticket Description:\n{description}"
-                ),
-            ),
-        ]
+        history_context = ""
+        if conversation_history:
+            history_lines = [
+                f"{m.get('author_type', 'user').upper()}: {m.get('content', '')[:150]}"
+                for m in conversation_history[-3:]
+            ]
+            history_context = "\nRecent Conversation:\n" + "\n".join(history_lines)
 
-        result = await self.llm.complete(
-            messages,
-            options=CompletionOptions(temperature=0.1, max_tokens=512),
+        user_content = (
+            f"Ticket Subject: {subject}\n"
+            f"Ticket Description: {description}"
+            f"{history_context}"
         )
 
+        messages = [
+            Message(role="system", content=_CLASSIFIER_SYSTEM_PROMPT),
+            Message(role="user", content=user_content),
+        ]
+
         try:
-            parsed = json.loads(result.content.strip())
-            classification = ClassificationResult(
-                category=parsed.get("category", "general_inquiry"),
-                priority=parsed.get("priority", "medium"),
-                sentiment=parsed.get("sentiment", "neutral"),
-                confidence=float(parsed.get("confidence", 0.5)),
-                reasoning=parsed.get("reasoning", ""),
+            output = await self.llm.complete_structured(
+                messages,
+                response_model=ClassificationOutput,
+                options=CompletionOptions(temperature=0.1, max_tokens=512),
             )
             logger.info(
                 "ticket_classified",
-                category=classification.category,
-                priority=classification.priority,
-                confidence=classification.confidence,
+                category=output.category.value,
+                priority=output.priority.value,
+                sentiment=output.sentiment.value,
+                requires_human=output.requires_immediate_human,
+                confidence=output.confidence,
             )
-            return classification
+            return output
 
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.warning("classification_parse_error", raw=result.content, error=str(e))
-            # Fallback defaults
-            return ClassificationResult(
-                category="general_inquiry",
-                priority="medium",
-                sentiment="neutral",
-                confidence=0.0,
-                reasoning="Classification failed — using defaults",
+        except Exception as e:
+            logger.warning("classification_fallback_triggered", error=str(e))
+            # Rule-based fallback if model fails
+            lower_desc = (subject + " " + description).lower()
+            is_urgent = any(w in lower_desc for w in ["urgent", "lawyer", "sue", "manager", "human", "furious"])
+            return ClassificationOutput(
+                category=TicketCategory.GENERAL_INQUIRY,
+                priority=TicketUrgency.URGENT if is_urgent else TicketUrgency.MEDIUM,
+                sentiment=CustomerSentiment.ANGRY if is_urgent else CustomerSentiment.NEUTRAL,
+                urgency_score=0.9 if is_urgent else 0.5,
+                requires_immediate_human=is_urgent,
+                confidence=0.6,
+                summary=subject[:100],
+                reasoning=f"Fallback classification applied due to model error: {e}",
             )

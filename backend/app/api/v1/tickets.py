@@ -106,3 +106,27 @@ async def delete_ticket(
 ) -> None:
     """Delete a support ticket (Owner and Admin only)."""
     await TicketService(db, current_user).delete_ticket(ticket_id)
+
+
+@router.post("/{ticket_id}/process-ai")
+async def process_ticket_ai(
+    ticket_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    auto_reply: bool = Query(True),
+):
+    """
+    Trigger the 5-agent AI workflow on a ticket:
+    Classification → RAG Retrieval → Generation → Evaluation → AI Response / Escalation.
+    """
+    return await TicketService(db, current_user).process_ai(ticket_id, auto_reply=auto_reply)
+
+
+@router.post("/{ticket_id}/classify")
+async def classify_ticket(
+    ticket_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    """Run standalone classification agent on a ticket."""
+    return await TicketService(db, current_user).classify_ticket(ticket_id)
