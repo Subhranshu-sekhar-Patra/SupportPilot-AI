@@ -114,6 +114,24 @@ class Ticket(UUIDMixin, TimestampMixin, Base):
         "TicketMessage", back_populates="ticket", cascade="all, delete-orphan", lazy="selectin"
     )
 
+    @property
+    def ai_escalation_reason(self) -> str | None:
+        if self.ai_metadata and isinstance(self.ai_metadata, dict):
+            esc = self.ai_metadata.get("escalation")
+            if isinstance(esc, dict):
+                return esc.get("escalation_reason")
+            return self.ai_metadata.get("escalation_reason")
+        return None
+
+    @property
+    def customer_sentiment(self) -> str | None:
+        if self.ai_metadata and isinstance(self.ai_metadata, dict):
+            cls_data = self.ai_metadata.get("classification")
+            if isinstance(cls_data, dict):
+                return cls_data.get("sentiment")
+            return self.ai_metadata.get("sentiment")
+        return None
+
     def __repr__(self) -> str:
         return f"<Ticket id={self.id} status={self.status} priority={self.priority}>"
 

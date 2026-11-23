@@ -11,7 +11,11 @@ from app.models.ticket import TicketPriority, TicketStatus
 from app.models.user import UserRole
 from app.schemas.ticket import (
     AddMessageRequest,
+    AssignTicketRequest,
+    AuditLogResponse,
     CreateTicketRequest,
+    ReopenTicketRequest,
+    ResolveTicketRequest,
     TicketListResponse,
     TicketMessageResponse,
     TicketResponse,
@@ -51,6 +55,21 @@ async def list_tickets(
         priority=priority,
         category=category,
         assigned_to_me=assigned_to_me,
+    )
+
+
+@router.get("/escalated/queue", response_model=TicketListResponse)
+async def list_escalated_queue(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+) -> TicketListResponse:
+    """List all escalated tickets in the organization requiring human attention."""
+    return await TicketService(db, current_user).list_tickets(
+        page=page,
+        page_size=page_size,
+        status=TicketStatus.ESCALATED,
     )
 
 
@@ -106,6 +125,54 @@ async def delete_ticket(
 ) -> None:
     """Delete a support ticket (Owner and Admin only)."""
     await TicketService(db, current_user).delete_ticket(ticket_id)
+
+
+@router.post("/{ticket_id}/assign", response_model=TicketResponse)
+async def assign_ticket(
+    ticket_id: str,
+    data: AssignTicketRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> TicketResponse:
+    """Assign ticket to a support agent and write audit log."""
+    return await TicketService(db, current_user).assign_ticket(ticket_id, data.agent_id)
+
+
+@router.post("/{ticket_id}/resolve", response_model=TicketResponse)
+async def resolve_ticket(
+    ticket_id: str,
+    data: ResolveTicketRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> TicketResponse:
+    """Mark ticket as resolved with resolution notes and compute duration."""
+    return await TicketService(db, current_user).resolve_ticket(
+        ticket_id, resolution_notes=data.resolution_notes
+    )
+
+
+@router.post("/{ticket_id}/reopen", response_model=TicketResponse)
+async def reopen_ticket(
+    ticket_id: str,
+    data: ReopenTicketRequest,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> TicketResponse:
+    """Reopen a resolved ticket and write audit log."""
+    return await TicketService(db, current_user).reopen_ticket(
+        ticket_id, reason=data.reason
+    )
+
+
+@router.get("/{ticket_id}/audit-logs", response_model=list[AuditLogResponse])
+async def get_ticket_audit_logs(
+    ticket_id: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> list[AuditLogResponse]:
+    """Retrieve complete audit history for a specific ticket."""
+    logs = await TicketService(db, current_user).get_audit_logs(ticket_id)
+    return [AuditLogResponse.model_validate(log) for log in logs]
 
 
 @router.post("/{ticket_id}/process-ai")

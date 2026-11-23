@@ -47,8 +47,15 @@ async def override_db():
     from app.core.middleware import reset_rate_limiters
     reset_rate_limiters()
 
-    yield
+    yield test_session_maker
 
     reset_rate_limiters()
     app.dependency_overrides.clear()
     await test_engine.dispose()
+
+
+@pytest.fixture
+async def db_session(override_db):
+    """Provides an AsyncSession bound to the current test event loop with NullPool."""
+    async with override_db() as session:
+        yield session

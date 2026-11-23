@@ -11,8 +11,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.dependencies import CurrentUser
 from app.models.ticket import Ticket, TicketStatus
+from app.schemas.analytics import AnalyticsOverviewResponse
+from app.services.analytics_service import AnalyticsService
 
 router = APIRouter(prefix="/analytics", tags=["Analytics"])
+
+
+@router.get("/overview", response_model=AnalyticsOverviewResponse)
+async def get_analytics_overview(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+) -> AnalyticsOverviewResponse:
+    """
+    Return comprehensive, organization-scoped customer support analytics
+    computed directly from PostgreSQL data.
+    """
+    service = AnalyticsService(db, current_user.organization_id)
+    return await service.get_overview()
 
 
 class DashboardStats(BaseModel):

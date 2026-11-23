@@ -36,7 +36,32 @@ class AddMessageRequest(BaseModel):
     is_internal: bool = False
 
 
+class AssignTicketRequest(BaseModel):
+    agent_id: str = Field(..., description="ID of the agent assigned to this ticket")
+
+
+class ResolveTicketRequest(BaseModel):
+    resolution_notes: str | None = Field(None, description="Notes detailing how the issue was resolved")
+
+
+class ReopenTicketRequest(BaseModel):
+    reason: str | None = Field(None, description="Reason for reopening the ticket")
+
+
 # ── Response schemas ───────────────────────────────────────
+
+class AuditLogResponse(BaseModel):
+    id: str
+    action: str
+    resource_type: str
+    resource_id: str | None
+    description: str | None
+    extra_data: dict[str, Any] | None = None
+    user_id: str | None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
 
 class TicketMessageResponse(BaseModel):
     id: str
@@ -65,7 +90,11 @@ class TicketResponse(BaseModel):
     ai_quality_score: float | None
     organization_id: str
     assigned_to_id: str | None
+    resolution_notes: str | None = None
+    resolution_time_seconds: int | None = None
     ai_metadata: dict[str, Any] | None = None
+    ai_escalation_reason: str | None = None
+    customer_sentiment: str | None = None
     created_at: datetime
     updated_at: datetime
     messages: list[TicketMessageResponse] = []
