@@ -8,6 +8,7 @@ from app.models.user import User, UserRole
 from app.models.ticket import Ticket, TicketMessage, TicketStatus, TicketPriority, TicketChannel
 from app.models.knowledge import KnowledgeDocument, DocumentStatus
 from app.models.audit_log import AuditLog
+from app.models.feedback import CustomerFeedback
 
 __all__ = [
     "Organization",
@@ -21,4 +22,5 @@ __all__ = [
     "KnowledgeDocument",
     "DocumentStatus",
     "AuditLog",
+    "CustomerFeedback",
 ]

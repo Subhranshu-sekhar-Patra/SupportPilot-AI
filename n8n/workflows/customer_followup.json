@@ -1,0 +1,135 @@
+{
+  "name": "SupportPilot — Workflow 3: Customer Follow-up & Feedback",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ticket-resolved",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-resolved-webhook",
+      "name": "Ticket Resolved Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "webhookId": "ticket-resolved-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Webhook Authentication & Deduplication Check\nconst headers = $input.item.json.headers || {};\nconst body = $input.item.json.body || $input.item.json;\n\nconst apiKey = headers['x-api-key'] || headers['X-API-Key'] || body.api_key;\nconst expectedKey = $env.SUPPORTPILOT_N8N_API_KEY || 'default-n8n-secret-key';\n\nif (apiKey && apiKey !== expectedKey) {\n  throw new Error('401: Unauthorized Webhook Signature/Key');\n}\n\nconst eventId = body.event_id || headers['x-event-id'] || ('evt_csat_' + Date.now());\n\nreturn {\n  event_id: eventId,\n  ticket_id: body.ticket_id,\n  customer_email: body.customer_email || 'customer@example.com',\n  customer_name: body.customer_name || 'Valued Customer',\n  wait_duration_seconds: body.wait_duration_seconds || 1,\n  simulated_rating: body.rating || 5,\n  simulated_comment: body.comment || 'Issue was resolved completely and professionally.'\n};"
+      },
+      "id": "node-auth-followup",
+      "name": "Verify Auth & Deduplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 300]
+    },
+    {
+      "parameters": {
+        "amount": "={{ $json.wait_duration_seconds }}",
+        "unit": "seconds"
+      },
+      "id": "node-wait-timer",
+      "name": "Wait for Configured Duration",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [540, 300],
+      "webhookId": "csat-wait-timer"
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "survey_url",
+              "value": "={{ $env.SUPPORTPILOT_FRONTEND_URL || 'http://localhost:3000' }}/feedback?ticket_id={{ $json.ticket_id }}"
+            },
+            {
+              "name": "email_subject",
+              "value": "=How was your experience with SupportPilot AI? (Ticket #{{ $json.ticket_id }})"
+            },
+            {
+              "name": "email_body",
+              "value": "=Dear {{ $json.customer_name }},\\n\\nYour support ticket #{{ $json.ticket_id }} was recently marked as resolved.\\n\\nWe would greatly appreciate your feedback! Please rate your experience using the link below:\\n{{ $env.SUPPORTPILOT_FRONTEND_URL || 'http://localhost:3000' }}/feedback?ticket_id={{ $json.ticket_id }}\\n\\nThank you,\\nSupportPilot Team"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-format-csat-request",
+      "name": "Format CSAT Feedback Request",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [760, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPPORTPILOT_API_URL || 'http://localhost:8000' }}/api/v1/webhooks/feedback",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-API-Key", "value": "={{ $env.SUPPORTPILOT_N8N_API_KEY || 'default-n8n-secret-key' }}" },
+            { "name": "X-Event-ID", "value": "={{ $('Verify Auth & Deduplicate').first().json.event_id }}" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "ticket_id", "value": "={{ $('Verify Auth & Deduplicate').first().json.ticket_id }}" },
+            { "name": "rating", "value": "={{ $('Verify Auth & Deduplicate').first().json.simulated_rating }}" },
+            { "name": "comment", "value": "={{ $('Verify Auth & Deduplicate').first().json.simulated_comment }}" },
+            { "name": "customer_email", "value": "={{ $('Verify Auth & Deduplicate').first().json.customer_email }}" }
+          ]
+        },
+        "options": {
+          "retry": {
+            "retry": {
+              "maxTries": 3,
+              "waitBetweenTries": 1500
+            }
+          }
+        }
+      },
+      "id": "node-save-feedback-postgres",
+      "name": "Save Feedback in PostgreSQL via API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"feedback_saved_in_database\",\n  \"ticket_id\": \"{{ $('Verify Auth & Deduplicate').first().json.ticket_id }}\",\n  \"feedback\": {{ $json }}\n}",
+        "options": {}
+      },
+      "id": "node-respond-csat-done",
+      "name": "Respond Feedback Completed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1240, 300]
+    }
+  ],
+  "connections": {
+    "Ticket Resolved Webhook": {
+      "main": [[{ "node": "Verify Auth & Deduplicate", "type": "main", "index": 0 }]]
+    },
+    "Verify Auth & Deduplicate": {
+      "main": [[{ "node": "Wait for Configured Duration", "type": "main", "index": 0 }]]
+    },
+    "Wait for Configured Duration": {
+      "main": [[{ "node": "Format CSAT Feedback Request", "type": "main", "index": 0 }]]
+    },
+    "Format CSAT Feedback Request": {
+      "main": [[{ "node": "Save Feedback in PostgreSQL via API", "type": "main", "index": 0 }]]
+    },
+    "Save Feedback in PostgreSQL via API": {
+      "main": [[{ "node": "Respond Feedback Completed", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

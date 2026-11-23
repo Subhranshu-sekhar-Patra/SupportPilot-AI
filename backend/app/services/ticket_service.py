@@ -31,11 +31,11 @@ logger = get_logger(__name__)
 
 # Valid state transitions
 _VALID_TRANSITIONS: dict[TicketStatus, set[TicketStatus]] = {
-    TicketStatus.OPEN:           {TicketStatus.ASSIGNED, TicketStatus.ESCALATED},
-    TicketStatus.ASSIGNED:       {TicketStatus.IN_PROGRESS, TicketStatus.ESCALATED, TicketStatus.OPEN},
-    TicketStatus.IN_PROGRESS:    {TicketStatus.PENDING_REVIEW, TicketStatus.ESCALATED},
+    TicketStatus.OPEN:           {TicketStatus.ASSIGNED, TicketStatus.ESCALATED, TicketStatus.RESOLVED},
+    TicketStatus.ASSIGNED:       {TicketStatus.IN_PROGRESS, TicketStatus.ESCALATED, TicketStatus.OPEN, TicketStatus.RESOLVED},
+    TicketStatus.IN_PROGRESS:    {TicketStatus.PENDING_REVIEW, TicketStatus.ESCALATED, TicketStatus.RESOLVED},
     TicketStatus.PENDING_REVIEW: {TicketStatus.RESOLVED, TicketStatus.IN_PROGRESS},
-    TicketStatus.ESCALATED:      {TicketStatus.IN_PROGRESS, TicketStatus.ASSIGNED},
+    TicketStatus.ESCALATED:      {TicketStatus.IN_PROGRESS, TicketStatus.ASSIGNED, TicketStatus.RESOLVED},
     TicketStatus.RESOLVED:       {TicketStatus.CLOSED, TicketStatus.OPEN},
     TicketStatus.CLOSED:         set(),
 }

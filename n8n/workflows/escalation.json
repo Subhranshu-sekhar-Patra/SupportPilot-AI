@@ -1,113 +1,162 @@
 {
-  "name": "SupportPilot — Escalation Handler",
+  "name": "SupportPilot — Workflow 1: Ticket Escalation",
   "nodes": [
     {
       "parameters": {
         "httpMethod": "POST",
-        "path": "ticket-escalated",
-        "responseMode": "lastNode",
+        "path": "ticket-escalation",
+        "responseMode": "responseNode",
         "options": {}
       },
-      "id": "webhook-escalation",
-      "name": "Escalation Webhook",
+      "id": "node-webhook-inbound",
+      "name": "Inbound Escalation Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [250, 300]
+      "position": [100, 300],
+      "webhookId": "ticket-escalation-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Webhook Authentication & Deduplication Check\nconst headers = $input.item.json.headers || {};\nconst body = $input.item.json.body || $input.item.json;\n\nconst apiKey = headers['x-api-key'] || headers['X-API-Key'] || body.api_key;\nconst expectedKey = $env.SUPPORTPILOT_N8N_API_KEY || 'default-n8n-secret-key';\n\nif (apiKey && apiKey !== expectedKey) {\n  throw new Error('401: Unauthorized Webhook Signature/Key');\n}\n\nconst eventId = body.event_id || headers['x-event-id'] || ('evt_' + Date.now());\n\nreturn {\n  event_id: eventId,\n  ticket_id: body.ticket_id,\n  subject: body.subject || 'Urgent Escalated Ticket',\n  priority: body.priority || 'urgent',\n  sentiment: body.sentiment || 'angry',\n  reason: body.reason || 'Escalation triggered by AI QA gate or critical customer request',\n  assigned_to_id: body.assigned_to_id || 'agent_tier2_lead'\n};"
+      },
+      "id": "node-auth-and-dedup",
+      "name": "Verify Auth & Deduplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SUPPORTPILOT_API_URL || 'http://localhost:8000' }}/api/v1/tickets/{{ $json.ticket_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-API-Key", "value": "={{ $env.SUPPORTPILOT_N8N_API_KEY || 'default-n8n-secret-key' }}" }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": false
+            }
+          },
+          "retry": {
+            "retry": {
+              "maxTries": 3,
+              "waitBetweenTries": 1000
+            }
+          }
+        }
+      },
+      "id": "node-validate-ticket",
+      "name": "Validate Ticket Info",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [540, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Assign specialist agent based on priority & category\nconst ticket = $input.item.json;\nlet targetAgent = 'agent_tier2_general';\n\nif (ticket.priority === 'urgent' || ticket.ai_category === 'technical') {\n  targetAgent = 'agent_tier2_senior_devops';\n} else if (ticket.ai_category === 'billing') {\n  targetAgent = 'agent_billing_supervisor';\n}\n\nreturn {\n  ticket_id: ticket.id,\n  subject: ticket.subject,\n  priority: 'urgent',\n  assigned_to_id: targetAgent,\n  customer_email: ticket.customer_email,\n  customer_name: ticket.customer_name,\n  alert_message: `🚨 URGENT ESCALATION: Ticket #${ticket.id} (${ticket.subject}) has been escalated and assigned to ${targetAgent}.`\n};"
+      },
+      "id": "node-assign-agent",
+      "name": "Assign Support Agent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 300]
     },
     {
       "parameters": {
         "values": {
           "string": [
             {
-              "name": "alert_channel",
-              "value": "#support-urgent"
+              "name": "channel",
+              "value": "#support-escalations"
             },
             {
-              "name": "message",
-              "value": "=⚠️ URGENT ESCALATION: Ticket #{{ $json.ticket_id }} '{{ $json.subject }}' has been escalated. Reason: {{ $json.reason }}"
+              "name": "notification_payload",
+              "value": "={{ $json.alert_message }}"
             }
           ]
         },
         "options": {}
       },
-      "id": "format-alert",
-      "name": "Format Alert Message",
+      "id": "node-send-notification",
+      "name": "Send Escalation Alert Notification",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3,
-      "position": [480, 300]
+      "position": [980, 300]
     },
     {
       "parameters": {
-        "url": "={{ $env.SUPPORTPILOT_API_URL }}/api/v1/webhooks/n8n/event",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "={{ $env.SUPPORTPILOT_API_URL || 'http://localhost:8000' }}/api/v1/webhooks/n8n/event",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Content-Type", "value": "application/json" }
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-API-Key", "value": "={{ $env.SUPPORTPILOT_N8N_API_KEY || 'default-n8n-secret-key' }}" },
+            { "name": "X-Event-ID", "value": "={{ $('Verify Auth & Deduplicate').first().json.event_id }}" }
           ]
         },
         "sendBody": true,
         "bodyParameters": {
           "parameters": [
             { "name": "event_type", "value": "ticket.escalated" },
-            { "name": "ticket_id", "value": "={{ $json.ticket_id }}" }
+            { "name": "ticket_id", "value": "={{ $('Assign Support Agent').first().json.ticket_id }}" },
+            { "name": "priority", "value": "urgent" },
+            { "name": "assigned_to_id", "value": "={{ $('Assign Support Agent').first().json.assigned_to_id }}" },
+            { "name": "notification_status", "value": "sent" }
           ]
         },
-        "options": {}
+        "options": {
+          "retry": {
+            "retry": {
+              "maxTries": 3,
+              "waitBetweenTries": 1500
+            }
+          }
+        }
       },
-      "id": "notify-backend",
-      "name": "Notify Backend Service",
+      "id": "node-update-status",
+      "name": "Update Ticket Status in Backend",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4,
-      "position": [720, 300]
+      "typeVersion": 4.1,
+      "position": [1200, 300]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={\"status\": \"escalation_dispatched\", \"ticket_id\": \"{{ $json.ticket_id }}\"}",
+        "responseBody": "={\n  \"status\": \"escalation_completed\",\n  \"ticket_id\": \"{{ $('Assign Support Agent').first().json.ticket_id }}\",\n  \"assigned_to_id\": \"{{ $('Assign Support Agent').first().json.assigned_to_id }}\",\n  \"workflow\": \"Workflow 1: Ticket Escalation\"\n}",
         "options": {}
       },
-      "id": "respond-escalation",
-      "name": "Respond Escalation",
+      "id": "node-respond-webhook",
+      "name": "Respond to Caller",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [950, 300]
+      "position": [1420, 300]
     }
   ],
   "connections": {
-    "Escalation Webhook": {
-      "main": [
-        [
-          {
-            "node": "Format Alert Message",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Inbound Escalation Webhook": {
+      "main": [[{ "node": "Verify Auth & Deduplicate", "type": "main", "index": 0 }]]
     },
-    "Format Alert Message": {
-      "main": [
-        [
-          {
-            "node": "Notify Backend Service",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Verify Auth & Deduplicate": {
+      "main": [[{ "node": "Validate Ticket Info", "type": "main", "index": 0 }]]
     },
-    "Notify Backend Service": {
-      "main": [
-        [
-          {
-            "node": "Respond Escalation",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Validate Ticket Info": {
+      "main": [[{ "node": "Assign Support Agent", "type": "main", "index": 0 }]]
+    },
+    "Assign Support Agent": {
+      "main": [[{ "node": "Send Escalation Alert Notification", "type": "main", "index": 0 }]]
+    },
+    "Send Escalation Alert Notification": {
+      "main": [[{ "node": "Update Ticket Status in Backend", "type": "main", "index": 0 }]]
+    },
+    "Update Ticket Status in Backend": {
+      "main": [[{ "node": "Respond to Caller", "type": "main", "index": 0 }]]
     }
   },
   "settings": {

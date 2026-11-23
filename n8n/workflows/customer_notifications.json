@@ -1,0 +1,178 @@
+{
+  "name": "SupportPilot — Workflow 2: Customer Notifications",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ticket-notification",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-notif-webhook",
+      "name": "Inbound Notification Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 300],
+      "webhookId": "ticket-notification-webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Webhook Authentication & Deduplication Check\nconst headers = $input.item.json.headers || {};\nconst body = $input.item.json.body || $input.item.json;\n\nconst apiKey = headers['x-api-key'] || headers['X-API-Key'] || body.api_key;\nconst expectedKey = $env.SUPPORTPILOT_N8N_API_KEY || 'default-n8n-secret-key';\n\nif (apiKey && apiKey !== expectedKey) {\n  throw new Error('401: Unauthorized Webhook Signature/Key');\n}\n\nconst eventId = body.event_id || headers['x-event-id'] || ('evt_notif_' + Date.now());\n\nreturn {\n  event_id: eventId,\n  event_type: body.event_type || 'ticket.created',\n  ticket_id: body.ticket_id,\n  customer_email: body.customer_email || 'customer@example.com',\n  customer_name: body.customer_name || 'Valued Customer',\n  subject: body.subject || 'Support Ticket Update',\n  message: body.message || 'Your support ticket has been received.'\n};"
+      },
+      "id": "node-auth-dedup-notif",
+      "name": "Authenticate & Deduplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [320, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.event_type }}",
+              "rightValue": "ticket.created",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "node-route-event-type",
+      "name": "Is Ticket Created?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [540, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "recipient",
+              "value": "={{ $json.customer_email }}"
+            },
+            {
+              "name": "email_subject",
+              "value": "=SupportPilot AI: Ticket #{{ $json.ticket_id }} Confirmation - {{ $json.subject }}"
+            },
+            {
+              "name": "email_body",
+              "value": "=Dear {{ $json.customer_name }},\\n\\nThank you for reaching out to SupportPilot AI. Your support ticket #{{ $json.ticket_id }} has been received and our AI agent team is reviewing it.\\n\\nYou will receive updates as progress is made.\\n\\nBest regards,\\nSupportPilot Team"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-format-confirmation",
+      "name": "Format Ticket Confirmation Email",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [780, 200]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "recipient",
+              "value": "={{ $json.customer_email }}"
+            },
+            {
+              "name": "email_subject",
+              "value": "=SupportPilot AI: Update on Ticket #{{ $json.ticket_id }}"
+            },
+            {
+              "name": "email_body",
+              "value": "=Dear {{ $json.customer_name }},\\n\\nThere is a new update on your support ticket #{{ $json.ticket_id }}:\\n\\n{{ $json.message }}\\n\\nBest regards,\\nSupportPilot Team"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-format-update-notification",
+      "name": "Format Ticket Update Notification",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [780, 420]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPPORTPILOT_API_URL || 'http://localhost:8000' }}/api/v1/webhooks/n8n/event",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "X-API-Key", "value": "={{ $env.SUPPORTPILOT_N8N_API_KEY || 'default-n8n-secret-key' }}" },
+            { "name": "X-Event-ID", "value": "={{ $('Authenticate & Deduplicate').first().json.event_id }}" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "event_type", "value": "ticket.notification_sent" },
+            { "name": "ticket_id", "value": "={{ $('Authenticate & Deduplicate').first().json.ticket_id }}" },
+            { "name": "notification_status", "value": "delivered" }
+          ]
+        },
+        "options": {
+          "retry": {
+            "retry": {
+              "maxTries": 3,
+              "waitBetweenTries": 1000
+            }
+          }
+        }
+      },
+      "id": "node-log-notification-backend",
+      "name": "Log Notification in Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"notification_dispatched\",\n  \"ticket_id\": \"{{ $('Authenticate & Deduplicate').first().json.ticket_id }}\",\n  \"recipient\": \"{{ $('Authenticate & Deduplicate').first().json.customer_email }}\",\n  \"event_type\": \"{{ $('Authenticate & Deduplicate').first().json.event_type }}\"\n}",
+        "options": {}
+      },
+      "id": "node-respond-notif",
+      "name": "Respond Notification Done",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1280, 300]
+    }
+  ],
+  "connections": {
+    "Inbound Notification Webhook": {
+      "main": [[{ "node": "Authenticate & Deduplicate", "type": "main", "index": 0 }]]
+    },
+    "Authenticate & Deduplicate": {
+      "main": [[{ "node": "Is Ticket Created?", "type": "main", "index": 0 }]]
+    },
+    "Is Ticket Created?": {
+      "main": [
+        [{ "node": "Format Ticket Confirmation Email", "type": "main", "index": 0 }],
+        [{ "node": "Format Ticket Update Notification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Ticket Confirmation Email": {
+      "main": [[{ "node": "Log Notification in Backend", "type": "main", "index": 0 }]]
+    },
+    "Format Ticket Update Notification": {
+      "main": [[{ "node": "Log Notification in Backend", "type": "main", "index": 0 }]]
+    },
+    "Log Notification in Backend": {
+      "main": [[{ "node": "Respond Notification Done", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

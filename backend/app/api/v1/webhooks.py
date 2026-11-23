@@ -1,139 +1,311 @@
 """
-SupportPilot AI — n8n Webhook Handler
-Receives workflow events from n8n and dispatches outgoing webhooks.
+SupportPilot AI — Webhook Endpoints & n8n Integration (v1)
+Handles incoming webhook events from n8n workflows and records customer feedback in PostgreSQL.
 """
 
-import hashlib
-import hmac
-
-import httpx
-from app.core.logger import get_logger
-from fastapi import APIRouter, Header, HTTPException, Request, Depends
-from pydantic import BaseModel
+from typing import Any
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.config import settings
+from app.core.logger import get_logger
 from app.db.session import get_db
-from app.models.ticket import Ticket, TicketStatus
+from app.models.audit_log import AuditLog
+from app.models.feedback import CustomerFeedback
+from app.models.ticket import MessageAuthorType, Ticket, TicketMessage, TicketPriority, TicketStatus
+from app.models.user import User
+from app.webhooks.security import is_duplicate_event, verify_webhook_auth
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["Webhooks"])
 
 
-# ── Incoming payload schemas ───────────────────────────────
+# ── Schemas ───────────────────────────────────────────────────
 
 class N8nTicketEvent(BaseModel):
     """Payload sent by n8n workflows to our backend."""
-    event_type: str         # ticket.created | ticket.updated | ticket.escalated
+    event_id: str | None = None
+    event_type: str  # ticket.escalated | ticket.created | ticket.updated | ticket.resolved
     ticket_id: str
-    extra_data: dict | None = None
+    assigned_to_id: str | None = None
+    priority: TicketPriority | None = None
+    notification_status: str | None = None
+    extra_data: dict[str, Any] | None = None
 
 
-# ── Signature verification ─────────────────────────────────
-
-def _verify_n8n_signature(payload: bytes, signature: str) -> bool:
-    """
-    Verify the HMAC-SHA256 signature of an incoming n8n webhook.
-    Prevents unauthorized webhook calls.
-    """
-    expected = hmac.new(
-        settings.n8n_api_key.encode(),
-        payload,
-        hashlib.sha256,
-    ).hexdigest()
-    return hmac.compare_digest(expected, signature)
+class CustomerFeedbackRequest(BaseModel):
+    """Payload sent by customer feedback surveys or n8n follow-up workflow."""
+    ticket_id: str
+    rating: int = Field(..., ge=1, le=5, description="CSAT Rating 1 to 5 stars")
+    comment: str | None = Field(None, max_length=2000)
+    customer_email: str | None = None
+    event_id: str | None = None
 
 
-# ── Incoming webhook endpoints ─────────────────────────────
+class CustomerFeedbackResponse(BaseModel):
+    id: str
+    ticket_id: str
+    organization_id: str
+    rating: int
+    comment: str | None
+    customer_email: str | None
+    status: str
 
-@router.post("/n8n/event", summary="Receive event from n8n workflow")
+    model_config = {"from_attributes": True}
+
+
+# ── Incoming n8n Event Endpoint ───────────────────────────────
+
+@router.post("/n8n/event", summary="Receive lifecycle event from n8n workflow")
 async def receive_n8n_event(
     request: Request,
     db: AsyncSession = Depends(get_db),
     x_n8n_signature: str | None = Header(None, alias="X-N8N-Signature"),
-) -> dict:
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    x_event_id: str | None = Header(None, alias="X-Event-ID"),
+) -> dict[str, Any]:
     """
-    Endpoint called by n8n workflows.
-    Verifies the signature and processes the event.
+    Receives events from n8n workflows:
+      - Enforces HMAC-SHA256 signature / API key authentication.
+      - Enforces duplicate-event suppression (idempotency).
+      - Handles ticket escalation, assignment, status update, and notification audit logs.
     """
     body = await request.body()
 
-    # Signature verification (skip in development for ease of testing)
-    if settings.is_production and x_n8n_signature:
-        if not _verify_n8n_signature(body, x_n8n_signature):
-            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+    # 1. Authentication check
+    if not verify_webhook_auth(body, signature=x_n8n_signature, api_key=x_api_key):
+        logger.warning("unauthorized_n8n_webhook_rejected")
+        raise HTTPException(status_code=401, detail="Unauthorized webhook: invalid signature or API key")
 
     try:
         payload = N8nTicketEvent.model_validate_json(body)
     except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Invalid payload: {e}")
+        raise HTTPException(status_code=422, detail=f"Malformed webhook payload: {e}")
 
-    logger.info("n8n_event_received", event_type=payload.event_type, ticket_id=payload.ticket_id)
+    # 2. Duplicate event protection
+    event_id = payload.event_id or x_event_id
+    if is_duplicate_event(event_id):
+        logger.info("duplicate_n8n_event_suppressed", event_id=event_id)
+        return {
+            "status": "duplicate_ignored",
+            "event_id": event_id,
+            "message": "Event has already been processed.",
+        }
 
-    # Route event to handler
-    handlers = {
-        "ticket.escalated": _handle_escalation,
-        "ticket.sla_breach": _handle_sla_breach,
-    }
-    handler = handlers.get(payload.event_type)
-    if handler:
-        await handler(payload.ticket_id, payload.extra_data or {}, db)
+    logger.info(
+        "n8n_event_processing",
+        event_type=payload.event_type,
+        ticket_id=payload.ticket_id,
+        event_id=event_id,
+    )
 
-    return {"status": "processed", "event_type": payload.event_type}
-
-
-# ── Outgoing webhook dispatcher ────────────────────────────
-
-async def dispatch_to_n8n(event_type: str, ticket_id: str, payload: dict) -> None:
-    """
-    Send an event to n8n to trigger a workflow.
-    Called internally when ticket events occur (e.g., ticket created, resolved).
-    """
-    if not settings.n8n_webhook_url:
-        logger.warning("n8n_webhook_url_not_configured")
-        return
-
-    webhook_payload = {
-        "event_type": event_type,
-        "ticket_id": ticket_id,
-        **payload,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"{settings.n8n_webhook_url}/{event_type.replace('.', '-')}",
-                json=webhook_payload,
-                headers={
-                    "X-API-Key": settings.n8n_api_key,
-                    "Content-Type": "application/json",
-                },
-            )
-            response.raise_for_status()
-            logger.info(
-                "n8n_webhook_dispatched",
-                event=event_type,
-                ticket_id=ticket_id,
-                status=response.status_code,
-            )
-    except httpx.HTTPError as e:
-        logger.error("n8n_webhook_failed", event=event_type, error=str(e))
-
-
-# ── Event handlers ─────────────────────────────────────────
-
-async def _handle_escalation(ticket_id: str, data: dict, db: AsyncSession) -> None:
-    """Mark a ticket as escalated based on n8n workflow trigger."""
-    result = await db.execute(select(Ticket).where(Ticket.id == ticket_id))
+    # 3. Fetch ticket from database
+    result = await db.execute(
+        select(Ticket)
+        .where(Ticket.id == payload.ticket_id)
+        .options(selectinload(Ticket.messages))
+    )
     ticket = result.scalar_one_or_none()
-    if ticket:
+    if not ticket:
+        raise HTTPException(status_code=404, detail=f"Ticket {payload.ticket_id} not found")
+
+    # 4. Route and handle event
+    if payload.event_type == "ticket.escalated":
         ticket.status = TicketStatus.ESCALATED
-        await db.commit()
-        logger.info("ticket_escalated_via_n8n", ticket_id=ticket_id)
+        if payload.priority:
+            ticket.priority = payload.priority
+        if payload.assigned_to_id:
+            user_exists = await db.scalar(select(User.id).where(User.id == payload.assigned_to_id))
+            if user_exists:
+                ticket.assigned_to_id = payload.assigned_to_id
+            else:
+                ticket.ai_metadata = ticket.ai_metadata or {}
+                ticket.ai_metadata["assigned_agent"] = payload.assigned_to_id
+
+        # Insert audit note
+        note_text = (
+            f"⚡ **n8n Automation**: Ticket escalated."
+            + (f" Assigned to agent: `{payload.assigned_to_id}`." if payload.assigned_to_id else "")
+            + (f" Priority set to `{payload.priority.value}`." if payload.priority else "")
+        )
+        msg = TicketMessage(
+            ticket_id=ticket.id,
+            author_type=MessageAuthorType.SYSTEM,
+            author_id=None,
+            content=note_text,
+            is_internal=True,
+            message_metadata={"source": "n8n_escalation_workflow", "event_id": event_id},
+        )
+        db.add(msg)
+
+        audit = AuditLog(
+            organization_id=ticket.organization_id,
+            action="ticket_escalated_via_n8n",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            description="n8n Escalation workflow assigned agent and marked ticket as escalated.",
+            extra_data=payload.extra_data,
+        )
+        db.add(audit)
+
+    elif payload.event_type in ("ticket.created", "ticket.notification_sent"):
+        audit = AuditLog(
+            organization_id=ticket.organization_id,
+            action="customer_notification_dispatched",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            description=f"n8n Customer notification workflow acknowledged for {ticket.customer_email or 'customer'}.",
+            extra_data=payload.extra_data,
+        )
+        db.add(audit)
+
+    elif payload.event_type == "ticket.resolved":
+        audit = AuditLog(
+            organization_id=ticket.organization_id,
+            action="ticket_resolution_followup_initiated",
+            resource_type="ticket",
+            resource_id=ticket.id,
+            description="n8n Follow-up workflow initiated CSAT survey timer.",
+            extra_data=payload.extra_data,
+        )
+        db.add(audit)
+
+    await db.commit()
+    await db.refresh(ticket)
+
+    return {
+        "status": "processed",
+        "event_id": event_id,
+        "event_type": payload.event_type,
+        "ticket_id": ticket.id,
+        "ticket_status": ticket.status.value,
+        "assigned_to_id": ticket.assigned_to_id or (ticket.ai_metadata or {}).get("assigned_agent"),
+    }
 
 
-async def _handle_sla_breach(ticket_id: str, data: dict, db: AsyncSession) -> None:
-    """Log SLA breach event (extend with notification logic)."""
-    logger.warning("sla_breach_event", ticket_id=ticket_id, data=data)
+# ── Customer Feedback Submission Endpoint ─────────────────────
+
+@router.post(
+    "/feedback",
+    response_model=CustomerFeedbackResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Save customer follow-up CSAT survey feedback into PostgreSQL",
+)
+async def submit_customer_feedback(
+    data: CustomerFeedbackRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_n8n_signature: str | None = Header(None, alias="X-N8N-Signature"),
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    x_event_id: str | None = Header(None, alias="X-Event-ID"),
+) -> CustomerFeedbackResponse:
+    """
+    Saves post-resolution survey feedback directly into PostgreSQL:
+      - Validates ticket exists.
+      - Checks duplicate-event suppression.
+      - Records CustomerFeedback entry.
+      - Attaches customer feedback message to ticket thread.
+      - Emits AuditLog record.
+    """
+    body = await request.body()
+    # Check auth if headers are present
+    if x_n8n_signature or x_api_key:
+        if not verify_webhook_auth(body, signature=x_n8n_signature, api_key=x_api_key):
+            raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    # Duplicate check
+    event_id = data.event_id or x_event_id
+    if is_duplicate_event(event_id):
+        logger.info("duplicate_feedback_suppressed", event_id=event_id)
+        # Fetch existing feedback
+        existing = await db.scalar(
+            select(CustomerFeedback).where(CustomerFeedback.ticket_id == data.ticket_id)
+        )
+        if existing:
+            return CustomerFeedbackResponse(
+                id=existing.id,
+                ticket_id=existing.ticket_id,
+                organization_id=existing.organization_id,
+                rating=existing.rating,
+                comment=existing.comment,
+                customer_email=existing.customer_email,
+                status="duplicate_acknowledged",
+            )
+
+    # 1. Fetch ticket
+    res = await db.execute(
+        select(Ticket)
+        .where(Ticket.id == data.ticket_id)
+        .options(selectinload(Ticket.messages))
+    )
+    ticket = res.scalar_one_or_none()
+    if not ticket:
+        raise HTTPException(status_code=404, detail=f"Ticket {data.ticket_id} not found")
+
+    # 2. Persist CustomerFeedback record
+    feedback = CustomerFeedback(
+        ticket_id=ticket.id,
+        organization_id=ticket.organization_id,
+        rating=data.rating,
+        comment=data.comment,
+        customer_email=data.customer_email or ticket.customer_email,
+        feedback_metadata={"event_id": event_id, "source": "n8n_followup_workflow"},
+    )
+    db.add(feedback)
+
+    # 3. Update ticket metadata & add message to thread
+    ticket.ai_metadata = ticket.ai_metadata or {}
+    ticket.ai_metadata["customer_feedback"] = {
+        "rating": data.rating,
+        "comment": data.comment,
+        "submitted_at": str(feedback.created_at),
+    }
+
+    stars = "⭐" * data.rating
+    feedback_message = (
+        f"{stars} **Customer Satisfaction Survey (CSAT): {data.rating}/5**\n"
+        + (f"Comment: *\"{data.comment}\"*" if data.comment else "No additional comments provided.")
+    )
+    msg = TicketMessage(
+        ticket_id=ticket.id,
+        author_type=MessageAuthorType.CUSTOMER,
+        author_id=None,
+        content=feedback_message,
+        is_internal=False,
+        message_metadata={"csat_rating": data.rating, "event_id": event_id},
+    )
+    db.add(msg)
+
+    # 4. Audit Log
+    audit = AuditLog(
+        organization_id=ticket.organization_id,
+        action="customer_feedback_received",
+        resource_type="ticket",
+        resource_id=ticket.id,
+        description=f"Received CSAT {data.rating}/5 from customer.",
+        extra_data={"rating": data.rating, "comment": data.comment},
+    )
+    db.add(audit)
+
+    await db.commit()
+    await db.refresh(feedback)
+
+    logger.info(
+        "customer_feedback_persisted",
+        ticket_id=ticket.id,
+        rating=feedback.rating,
+        feedback_id=feedback.id,
+    )
+
+    return CustomerFeedbackResponse(
+        id=feedback.id,
+        ticket_id=feedback.ticket_id,
+        organization_id=feedback.organization_id,
+        rating=feedback.rating,
+        comment=feedback.comment,
+        customer_email=feedback.customer_email,
+        status="saved",
+    )

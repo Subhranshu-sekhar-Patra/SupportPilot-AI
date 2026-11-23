@@ -65,6 +65,7 @@ class TicketResponse(BaseModel):
     ai_quality_score: float | None
     organization_id: str
     assigned_to_id: str | None
+    ai_metadata: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
     messages: list[TicketMessageResponse] = []
