@@ -1,0 +1,59 @@
+# .gitignore — SupportPilot AI
+
+# Environment files (NEVER commit these)
+.env
+.env.local
+.env.*.local
+
+# Local SQLite / Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Node / Frontend
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+frontend/out/
+frontend/.pnpm-store/
+*.tsbuildinfo
+
+# Python / Backend
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.venv/
+backend/.pytest_cache/
+backend/.mypy_cache/
+backend/htmlcov/
+backend/.coverage
+*.pyc
+*.pyo
+*.pyd
+
+# Alembic
+backend/app/db/migrations/versions/*.pyc
+
+# Docker
+*.log
+
+# Uploads / local data
+backend/uploads/
+chroma_data/
+postgres_data/
+redis_data/
+n8n_data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+
+# SSL certs (generated locally — not committed)
+nginx/ssl/*.pem
+nginx/ssl/*.key
+nginx/ssl/*.crt

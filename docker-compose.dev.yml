@@ -1,0 +1,35 @@
+# ============================================================
+# SupportPilot AI — Docker Compose Dev Override
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# Adds hot-reload mounts and disables Nginx for direct port access.
+# ============================================================
+version: "3.9"
+
+services:
+  backend:
+    build:
+      target: development
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./backend:/app            # hot-reload
+      - uploads_data:/app/uploads
+    environment:
+      APP_ENV: development
+      LOG_LEVEL: DEBUG
+
+  frontend:
+    build:
+      target: development
+    command: pnpm dev
+    volumes:
+      - ./frontend:/app           # hot-reload
+      - /app/node_modules         # preserve node_modules inside container
+      - /app/.next
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+
+  # Disable nginx in dev — access services directly on their ports
+  nginx:
+    profiles:
+      - prod

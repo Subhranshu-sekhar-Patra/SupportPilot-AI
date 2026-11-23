@@ -1,0 +1,83 @@
+{
+  "name": "SupportPilot — Ticket Resolved",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ticket-resolved",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Ticket Resolved Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "customer_email",
+              "value": "={{ $json.customer_email }}"
+            },
+            {
+              "name": "ticket_id",
+              "value": "={{ $json.ticket_id }}"
+            },
+            {
+              "name": "subject",
+              "value": "How was your support experience with SupportPilot AI?"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "prepare-survey-payload",
+      "name": "Prepare Survey Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"survey_queued\", \"ticket_id\": \"{{ $json.ticket_id }}\", \"recipient\": \"{{ $json.customer_email }}\"}",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [750, 300]
+    }
+  ],
+  "connections": {
+    "Ticket Resolved Webhook": {
+      "main": [
+        [
+          {
+            "node": "Prepare Survey Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Survey Payload": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

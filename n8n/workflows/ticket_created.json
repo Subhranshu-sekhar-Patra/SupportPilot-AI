@@ -1,0 +1,97 @@
+{
+  "name": "SupportPilot — Ticket Created",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ticket-created",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Ticket Created Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.priority }}",
+              "rightValue": "urgent",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        }
+      },
+      "id": "if-urgent",
+      "name": "Is Urgent?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SUPPORTPILOT_API_URL }}/api/v1/agents/process-ticket",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "ticket_id", "value": "={{ $json.ticket_id }}" },
+            { "name": "force_reprocess", "value": false }
+          ]
+        },
+        "options": {}
+      },
+      "id": "trigger-ai",
+      "name": "Trigger AI Processing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [750, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"processed\", \"ticket_id\": \"{{ $json.ticket_id }}\"}",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1000, 300]
+    }
+  ],
+  "connections": {
+    "Ticket Created Webhook": {
+      "main": [[ { "node": "Is Urgent?", "type": "main", "index": 0 } ]]
+    },
+    "Is Urgent?": {
+      "main": [
+        [ { "node": "Trigger AI Processing", "type": "main", "index": 0 } ],
+        [ { "node": "Respond", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Trigger AI Processing": {
+      "main": [[ { "node": "Respond", "type": "main", "index": 0 } ]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

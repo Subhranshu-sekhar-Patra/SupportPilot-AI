@@ -1,0 +1,116 @@
+{
+  "name": "SupportPilot — Escalation Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ticket-escalated",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "webhook-escalation",
+      "name": "Escalation Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "alert_channel",
+              "value": "#support-urgent"
+            },
+            {
+              "name": "message",
+              "value": "=⚠️ URGENT ESCALATION: Ticket #{{ $json.ticket_id }} '{{ $json.subject }}' has been escalated. Reason: {{ $json.reason }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "format-alert",
+      "name": "Format Alert Message",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.SUPPORTPILOT_API_URL }}/api/v1/webhooks/n8n/event",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            { "name": "event_type", "value": "ticket.escalated" },
+            { "name": "ticket_id", "value": "={{ $json.ticket_id }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "notify-backend",
+      "name": "Notify Backend Service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [720, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"escalation_dispatched\", \"ticket_id\": \"{{ $json.ticket_id }}\"}",
+        "options": {}
+      },
+      "id": "respond-escalation",
+      "name": "Respond Escalation",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [950, 300]
+    }
+  ],
+  "connections": {
+    "Escalation Webhook": {
+      "main": [
+        [
+          {
+            "node": "Format Alert Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert Message": {
+      "main": [
+        [
+          {
+            "node": "Notify Backend Service",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Backend Service": {
+      "main": [
+        [
+          {
+            "node": "Respond Escalation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

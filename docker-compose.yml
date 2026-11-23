@@ -1,0 +1,92 @@
+# ============================================================
+# SupportPilot AI — Docker Compose (Phase 1 Core Services)
+# Services: PostgreSQL, FastAPI Backend, Next.js Frontend
+# ============================================================
+version: "3.9"
+
+networks:
+  supportpilot_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  uploads_data:
+
+services:
+  # ──────────────────────────────────────────
+  # 1. PostgreSQL Database
+  # ──────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: supportpilot_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-supportpilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-supportpilot_password}
+      POSTGRES_DB: ${POSTGRES_DB:-supportpilot}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supportpilot} -d ${POSTGRES_DB:-supportpilot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - supportpilot_net
+
+  # ──────────────────────────────────────────
+  # 2. FastAPI Backend Service
+  # ──────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    container_name: supportpilot_backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-supportpilot}:${POSTGRES_PASSWORD:-supportpilot_password}@postgres:5432/${POSTGRES_DB:-supportpilot}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-supportpilot}:${POSTGRES_PASSWORD:-supportpilot_password}@postgres:5432/${POSTGRES_DB:-supportpilot}
+      APP_ENV: ${APP_ENV:-development}
+      SECRET_KEY: ${SECRET_KEY:-supportpilot_default_secret_key_32_characters_minimum}
+    volumes:
+      - uploads_data:/app/uploads
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks:
+      - supportpilot_net
+
+  # ──────────────────────────────────────────
+  # 3. Next.js Frontend Service
+  # ──────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+    container_name: supportpilot_frontend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: http://backend:8000
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - supportpilot_net
