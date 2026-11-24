@@ -19,6 +19,16 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: startup and shutdown events."""
+    # ── Load GCP Secret Manager secrets (no-op in dev/local) ──
+    try:
+        from app.services.secret_manager_service import load_secrets_from_manager  # noqa: PLC0415
+        load_secrets_from_manager()
+        # Reload settings so the freshly injected env vars are picked up
+        from app.config import get_settings  # noqa: PLC0415
+        get_settings.cache_clear()
+    except Exception as _sm_exc:
+        logger.warning("secret_manager_startup_error", error=str(_sm_exc))
+
     logger.info(
         "starting_application",
         name=settings.app_name,

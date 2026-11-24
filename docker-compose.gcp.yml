@@ -1,0 +1,264 @@
+# ============================================================
+# SupportPilot AI — GCP Production Docker Compose Configuration
+# Google Compute Engine (Ubuntu 24.04 LTS) + Docker Engine
+# Caddy reverse proxy | PostgreSQL | ChromaDB | n8n
+# Secrets via Google Secret Manager (injected at startup)
+# Documents via Google Cloud Storage
+# ============================================================
+version: "3.9"
+
+networks:
+  supportpilot_gcp_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+
+volumes:
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
+  postgres_gcp_data:
+    driver: local
+  chroma_gcp_data:
+    driver: local
+  n8n_gcp_data:
+    driver: local
+
+services:
+  # ──────────────────────────────────────────────────────────
+  # 1. Caddy — Automatic HTTPS Reverse Proxy (sole public ingress)
+  # ──────────────────────────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: supportpilot_caddy_gcp
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    env_file:
+      - .env.gcp
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      n8n:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "caddy", "version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    networks:
+      - supportpilot_gcp_net
+
+  # ──────────────────────────────────────────────────────────
+  # 2. PostgreSQL — Internal only, never exposed publicly
+  # ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: supportpilot_postgres_gcp
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-supportpilot_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?DB password required}
+      POSTGRES_DB: ${POSTGRES_DB:-supportpilot_prod}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_gcp_data:/var/lib/postgresql/data
+      # Optional: mount custom postgres config
+      - ./config/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    # Bind strictly to localhost loopback for host-level maintenance only
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supportpilot_admin} -d ${POSTGRES_DB:-supportpilot_prod}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    networks:
+      - supportpilot_gcp_net
+
+  # ──────────────────────────────────────────────────────────
+  # 3. ChromaDB — Internal vector store, no public exposure
+  # ──────────────────────────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:0.5.20
+    container_name: supportpilot_chromadb_gcp
+    restart: always
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    volumes:
+      - chroma_gcp_data:/chroma/chroma
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/heartbeat || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    networks:
+      - supportpilot_gcp_net
+
+  # ──────────────────────────────────────────────────────────
+  # 4. FastAPI Backend — Gunicorn + Uvicorn workers
+  #    Cloud Storage + Secret Manager via service account key
+  # ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    image: supportpilot-backend:gcp
+    container_name: supportpilot_backend_gcp
+    restart: always
+    env_file:
+      - .env.gcp
+    environment:
+      APP_ENV: production
+      LOG_LEVEL: INFO
+      LOG_FORMAT: json
+      POSTGRES_HOST: postgres
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-supportpilot_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supportpilot_prod}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-supportpilot_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supportpilot_prod}
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
+      # Cloud Storage: documents go to GCS not local disk
+      STORAGE_BACKEND: gcs
+      GCS_BUCKET_NAME: ${GCS_BUCKET_NAME}
+      GCS_PROJECT_ID: ${GCP_PROJECT_ID}
+      # Service account key path (mounted as volume)
+      GOOGLE_APPLICATION_CREDENTIALS: /app/secrets/gcp-sa-key.json
+    volumes:
+      # Service account key injected at deploy time by startup script
+      - /opt/supportpilot/secrets:/app/secrets:ro
+    expose:
+      - "8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    networks:
+      - supportpilot_gcp_net
+
+  # ──────────────────────────────────────────────────────────
+  # 5. Next.js Frontend — Standalone build
+  # ──────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+    image: supportpilot-frontend:gcp
+    container_name: supportpilot_frontend_gcp
+    restart: always
+    env_file:
+      - .env.gcp
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.yourdomain.com}
+    expose:
+      - "3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    networks:
+      - supportpilot_gcp_net
+
+  # ──────────────────────────────────────────────────────────
+  # 6. n8n — Workflow automation, protected behind Caddy auth
+  # ──────────────────────────────────────────────────────────
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: supportpilot_n8n_gcp
+    restart: always
+    environment:
+      - N8N_HOST=${N8N_HOST:-n8n.yourdomain.com}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-https://n8n.yourdomain.com/webhook}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?n8n encryption key required}
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-n8n_admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:?n8n password required}
+    volumes:
+      - n8n_gcp_data:/home/node/.n8n
+    expose:
+      - "5678"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    networks:
+      - supportpilot_gcp_net

@@ -4,6 +4,14 @@
 .env
 .env.local
 .env.*.local
+.env.gcp
+.env.production
+
+# ── GCP Secrets (NEVER commit) ────────────────────────────────
+secrets/
+*.json.key
+gcp-sa-key.json
+*-sa-key.json
 
 # Local SQLite / Databases
 *.db

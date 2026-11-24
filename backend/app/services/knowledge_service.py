@@ -2,8 +2,12 @@
 SupportPilot AI — Knowledge Base Service
 Handles document lifecycle: upload, storage, indexing in ChromaDB, re-indexing, and semantic search.
 Strictly isolated by organization.
+
+Storage backend: local disk (dev) or Google Cloud Storage (GCP production).
+Controlled by STORAGE_BACKEND env var — no code changes needed to switch.
 """
 
+import io
 import os
 import shutil
 from pathlib import Path
@@ -26,6 +30,7 @@ from app.schemas.knowledge import (
     QueryKnowledgeResponse,
     RetrievedChunkResponse,
 )
+from app.services.storage_service import storage
 
 logger = get_logger(__name__)
 
@@ -64,8 +69,9 @@ class KnowledgeService:
         run_async: bool = False,
     ) -> KnowledgeDocumentResponse:
         """
-        Validate file, store on disk, create DB record, and trigger ingestion.
+        Validate file, store via storage backend (local disk or GCS), create DB record, trigger ingestion.
         """
+        import io  # noqa: PLC0415
         filename = file.filename or "uploaded_document"
         ext = Path(filename).suffix.lower().lstrip(".")
 
@@ -74,23 +80,24 @@ class KnowledgeService:
                 f"Unsupported file type: .{ext}. Allowed: {settings.allowed_upload_types}"
             )
 
-        # Ensure upload dir exists
-        upload_dir = Path(settings.upload_dir) / self.org_id
-        upload_dir.mkdir(parents=True, exist_ok=True)
-
-        target_path = upload_dir / filename
-
-        # Save file to disk
-        with open(target_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            file_size = target_path.stat().st_size
+        # Read file content once for size check and storage upload
+        file_content = await file.read()
+        file_size = len(file_content)
 
         max_bytes = settings.max_upload_size_mb * 1024 * 1024
         if file_size > max_bytes:
-            target_path.unlink(missing_ok=True)
             raise ValidationError(
                 f"File size exceeds maximum allowed of {settings.max_upload_size_mb}MB"
             )
+
+        # Upload via pluggable storage backend (local disk or GCS)
+        storage_backend = storage()
+        storage_path = await storage_backend.upload(
+            org_id=self.org_id,
+            filename=filename,
+            data=io.BytesIO(file_content),
+            content_type=file.content_type or "application/octet-stream",
+        )
 
         doc_title = title.strip() if title else Path(filename).stem.replace("_", " ").title()
 
@@ -99,7 +106,7 @@ class KnowledgeService:
             file_name=filename,
             file_type=ext,
             file_size_bytes=file_size,
-            storage_path=str(target_path),
+            storage_path=storage_path,
             status=DocumentStatus.PENDING,
             organization_id=self.org_id,
             uploaded_by_id=self.user.id,
@@ -109,7 +116,7 @@ class KnowledgeService:
         await self.db.commit()
         await self.db.refresh(doc)
 
-        logger.info("knowledge_doc_uploaded", document_id=doc.id, org_id=self.org_id)
+        logger.info("knowledge_doc_uploaded", document_id=doc.id, org_id=self.org_id, storage_path=storage_path)
 
         # Process ingestion immediately unless deferred
         if not run_async:
@@ -180,7 +187,7 @@ class KnowledgeService:
         return KnowledgeDocumentResponse.model_validate(doc)
 
     async def delete_document(self, document_id: str) -> None:
-        """Remove document record, disk file, and all chunks from ChromaDB."""
+        """Remove document record, file (local or GCS), and all chunks from ChromaDB."""
         doc = await self._get_doc_or_404(document_id)
 
         # 1. Clean vectors from ChromaDB
@@ -191,12 +198,11 @@ class KnowledgeService:
         except Exception as e:
             logger.warning("chroma_delete_failed", document_id=document_id, error=str(e))
 
-        # 2. Delete disk file
-        if os.path.exists(doc.storage_path):
-            try:
-                os.remove(doc.storage_path)
-            except OSError as e:
-                logger.warning("file_delete_failed", path=doc.storage_path, error=str(e))
+        # 2. Delete file via storage backend (handles both local disk and GCS)
+        try:
+            await storage().delete(doc.storage_path)
+        except Exception as e:
+            logger.warning("file_delete_failed", path=doc.storage_path, error=str(e))
 
         # 3. Delete DB record
         await self.db.delete(doc)
