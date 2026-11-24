@@ -250,10 +250,11 @@ python -m pytest -v
 
 ---
 
-## 🚀 Production Deployment & Operations
+## 🚀 Deployment & Operations
 
-- **Production Deployment Runbook:** See [`DEPLOYMENT.md`](file:///DEPLOYMENT.md) for full instructions on launching with `docker-compose.prod.yml`, Caddy reverse proxy, and Let's Encrypt / ZeroSSL.
-- **Ubuntu VPS Deployment Guide:** See [`docs/UBUNTU_VPS_DEPLOYMENT.md`](file:///docs/UBUNTU_VPS_DEPLOYMENT.md) for a complete step-by-step tutorial on provisioning an Ubuntu 22.04/24.04 server.
+- **100% Free Cloud Deployment:** See [`docs/FREE_DEPLOYMENT_GUIDE.md`](file:///docs/FREE_DEPLOYMENT_GUIDE.md) for deploying with Vercel (Frontend) + Render (Backend) + Supabase (PostgreSQL) with zero monthly cost and no credit card required.
+- **Google Cloud Platform (GCP):** See [`docs/GCP_DEPLOYMENT.md`](file:///docs/GCP_DEPLOYMENT.md) for GCE VM, Cloud Storage, Secret Manager, and automated backup deployment.
+- **Ubuntu VPS Deployment:** See [`docs/UBUNTU_VPS_DEPLOYMENT.md`](file:///docs/UBUNTU_VPS_DEPLOYMENT.md) for a single-server Docker Compose deployment with Caddy reverse proxy and automatic Let's Encrypt TLS.
 - **Database Backup & Disaster Recovery:** See [`docs/BACKUP_AND_RESTORE.md`](file:///docs/BACKUP_AND_RESTORE.md) for automated backup scripts (`scripts/backup_db.sh`), point-in-time recovery, and cloud replication.
 
 ---
