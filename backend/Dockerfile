@@ -46,12 +46,9 @@ USER appuser
 
 EXPOSE 8000
 
-# Gunicorn with uvicorn workers for production
-CMD ["gunicorn", "app.main:app", \
-     "-w", "4", \
-     "-k", "uvicorn.workers.UvicornWorker", \
-     "--bind", "0.0.0.0:8000", \
-     "--timeout", "120", \
-     "--graceful-timeout", "30", \
-     "--access-logfile", "-", \
-     "--error-logfile", "-"]
+ENV PORT=8000
+ENV WORKERS=1
+
+# Run gunicorn respecting dynamic $PORT from cloud hosts (Render, Cloud Run, etc.)
+# Default to 1 worker to stay safely within free-tier 512MB RAM limits
+CMD ["sh", "-c", "gunicorn app.main:app -w ${WORKERS:-1} -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:${PORT:-8000} --timeout 120 --graceful-timeout 30 --access-logfile - --error-logfile -"]

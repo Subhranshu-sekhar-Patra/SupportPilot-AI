@@ -19,8 +19,9 @@ import app.models  # noqa: F401 — registers all models with Base.metadata
 # Alembic Config object (access to alembic.ini values)
 config = context.config
 
-# Override the sqlalchemy.url with the sync URL from settings
-config.set_main_option("sqlalchemy.url", settings.database_url_sync)
+# Override the sqlalchemy.url with the sync URL from settings (ensure sync postgresql driver)
+sync_url = settings.database_url_sync.replace("postgresql+asyncpg://", "postgresql://")
+config.set_main_option("sqlalchemy.url", sync_url)
 
 # Configure Python logging from alembic.ini
 if config.config_file_name is not None:

@@ -11,6 +11,10 @@ from app.core.logger import get_logger
 logger = get_logger(__name__)
 
 db_url = settings.database_url
+# Ensure asyncpg dialect is present for async engine if user pasted standard postgresql://
+if db_url.startswith("postgresql://"):
+    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
+
 engine_kwargs = {"echo": settings.app_env == "development"}
 
 # Check if PostgreSQL async driver is present; if not on bare host, fallback to SQLite
