@@ -14,12 +14,14 @@ from app.models.base import TimestampMixin, UUIDMixin
 
 class UserRole(str, enum.Enum):
     """
-    Organization-level roles.
-    - OWNER:  Can manage org settings, billing, and all resources
-    - ADMIN:  Can manage users, agents, and all tickets
-    - AGENT:  Can view and respond to assigned tickets
-    - VIEWER: Read-only access to dashboards and reports
+    Organization and platform-level roles.
+    - SUPER_ADMIN: Platform-level administrator with global cross-tenant access
+    - OWNER:       Can manage org settings, billing, and all resources
+    - ADMIN:       Can manage users, agents, and all tickets
+    - AGENT:       Can view and respond to assigned tickets
+    - VIEWER:      Read-only access to dashboards and reports
     """
+    SUPER_ADMIN = "super_admin"
     OWNER = "owner"
     ADMIN = "admin"
     AGENT = "agent"

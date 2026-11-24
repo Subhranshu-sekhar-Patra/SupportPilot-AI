@@ -243,7 +243,7 @@ cd frontend
 pnpm type-check
 pnpm lint
 
-# 2. Backend Automated Test Suite (37 tests across AI, RAG, Webhooks, Auth, Human Support, Analytics)
+# 2. Backend Automated Test Suite (41 tests across AI agents, RAG, Webhooks, Auth, Human Support, Analytics, SaaS Production)
 cd backend
 python -m pytest -v
 ```
@@ -252,8 +252,24 @@ python -m pytest -v
 
 ## 🚀 Production Deployment & Operations
 
-- **Production Deployment Runbook:** See [`DEPLOYMENT.md`](file:///DEPLOYMENT.md) for full instructions on launching with `docker-compose.prod.yml`, Nginx reverse proxy, and Let's Encrypt SSL.
+- **Production Deployment Runbook:** See [`DEPLOYMENT.md`](file:///DEPLOYMENT.md) for full instructions on launching with `docker-compose.prod.yml`, Caddy reverse proxy, and Let's Encrypt / ZeroSSL.
+- **Ubuntu VPS Deployment Guide:** See [`docs/UBUNTU_VPS_DEPLOYMENT.md`](file:///docs/UBUNTU_VPS_DEPLOYMENT.md) for a complete step-by-step tutorial on provisioning an Ubuntu 22.04/24.04 server.
 - **Database Backup & Disaster Recovery:** See [`docs/BACKUP_AND_RESTORE.md`](file:///docs/BACKUP_AND_RESTORE.md) for automated backup scripts (`scripts/backup_db.sh`), point-in-time recovery, and cloud replication.
+
+---
+
+## 💬 Embeddable Customer Chat Widget
+
+SupportPilot AI includes an embeddable customer chatbot widget that can be embedded into any external website. To install the widget, add the script before `</body>`:
+
+```html
+<script 
+  src="https://api.yourdomain.com/api/v1/widget/loader.js" 
+  data-org-slug="your-org-slug" 
+  data-primary-color="#2563eb"
+  defer>
+</script>
+```
 
 ---
 
@@ -264,6 +280,10 @@ python -m pytest -v
 | `APP_ENV` | Application environment (`development` / `production`) | `development` |
 | `LOG_FORMAT` | Log format (`text` / `json`) | `text` (auto `json` in prod) |
 | `SECRET_KEY` | 32+ character key for JWT signature | Must be set |
+| `DOMAIN_APP` | Domain for Next.js frontend | `app.localhost` |
+| `DOMAIN_API` | Domain for FastAPI backend | `api.localhost` |
+| `DOMAIN_N8N` | Domain for n8n workflow engine | `n8n.localhost` |
+| `ACME_EMAIL` | Contact email for Let's Encrypt SSL certificates | `admin@supportpilot.dev` |
 | `DATABASE_URL` | Async PostgreSQL connection string | `postgresql+asyncpg://...` |
 | `DATABASE_URL_SYNC` | Synchronous connection string for Alembic | `postgresql://...` |
 | `POSTGRES_USER` | PostgreSQL superuser username | `supportpilot` |
@@ -272,3 +292,4 @@ python -m pytest -v
 | `NEXT_PUBLIC_API_URL` | Backend URL accessible from frontend | `http://localhost:8000` |
 | `GEMINI_API_KEY` | Google Gemini API key for RAG & AI agents | Must be set |
 | `N8N_API_KEY` | HMAC shared secret for n8n webhooks | Must be set |
+| `N8N_ENCRYPTION_KEY` | 24+ char key for n8n credentials encryption | Must be set |

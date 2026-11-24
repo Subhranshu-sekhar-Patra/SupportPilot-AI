@@ -1,0 +1,46 @@
+# ============================================================
+# SupportPilot AI — Caddy Production Reverse Proxy
+# Automatic HTTPS with Let's Encrypt / ZeroSSL
+# ============================================================
+{
+    email {$ACME_EMAIL:admin@supportpilot.dev}
+    admin off
+}
+
+# ── 1. Next.js Frontend Dashboard ───────────────────────────
+{$DOMAIN_APP:app.localhost} {
+    encode gzip zstd
+
+    reverse_proxy frontend:3000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
+
+# ── 2. FastAPI Backend API ───────────────────────────────────
+{$DOMAIN_API:api.localhost} {
+    encode gzip zstd
+    request_body {
+        max_size 50MB
+    }
+
+    reverse_proxy backend:8000 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}
+
+# ── 3. n8n Workflow Automation Engine ────────────────────────
+{$DOMAIN_N8N:n8n.localhost} {
+    encode gzip zstd
+
+    reverse_proxy n8n:5678 {
+        header_up Host {upstream_hostport}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

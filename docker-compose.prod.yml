@@ -1,6 +1,7 @@
 # ============================================================
 # SupportPilot AI — Production Docker Compose Configuration
-# Services: PostgreSQL 16, ChromaDB, FastAPI Backend, Next.js Frontend, n8n Automation
+# Complete Stack: Caddy, Next.js Frontend, FastAPI Backend,
+# PostgreSQL 16, ChromaDB Vector Store, n8n Automation Engine
 # ============================================================
 version: "3.9"
 
@@ -9,34 +10,66 @@ networks:
     driver: bridge
 
 volumes:
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local
   postgres_prod_data:
     driver: local
-  uploads_prod_data:
-    driver: local
   chroma_prod_data:
+    driver: local
+  uploads_prod_data:
     driver: local
   n8n_prod_data:
     driver: local
 
 services:
   # ──────────────────────────────────────────────────────────
-  # 1. PostgreSQL Database (Production Hardened)
+  # 1. Caddy Reverse Proxy (Automatic HTTPS via Let's Encrypt)
+  # ──────────────────────────────────────────────────────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: supportpilot_caddy_prod
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    env_file:
+      - .env.production
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      n8n:
+        condition: service_healthy
+    networks:
+      - supportpilot_prod_net
+
+  # ──────────────────────────────────────────────────────────
+  # 2. PostgreSQL 16 Database (Private Internal Network Only)
   # ──────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     container_name: supportpilot_postgres_prod
     restart: always
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-supportpilot}
+      POSTGRES_USER: ${POSTGRES_USER:-supportpilot_admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Database password required}
       POSTGRES_DB: ${POSTGRES_DB:-supportpilot_prod}
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - postgres_prod_data:/var/lib/postgresql/data
+    # Bind strictly to localhost loopback for host maintenance (not exposed to public internet)
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supportpilot} -d ${POSTGRES_DB:-supportpilot_prod}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-supportpilot_admin} -d ${POSTGRES_DB:-supportpilot_prod}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -53,7 +86,39 @@ services:
       - supportpilot_prod_net
 
   # ──────────────────────────────────────────────────────────
-  # 2. FastAPI Backend Service (Production Multi-worker Gunicorn)
+  # 3. ChromaDB Vector Store (Private Internal Network Only)
+  # ──────────────────────────────────────────────────────────
+  chromadb:
+    image: chromadb/chroma:0.5.20
+    container_name: supportpilot_chromadb_prod
+    restart: always
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    volumes:
+      - chroma_prod_data:/chroma/chroma
+    # No public host port; accessible inside container network at http://chromadb:8000
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/heartbeat || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    networks:
+      - supportpilot_prod_net
+
+  # ──────────────────────────────────────────────────────────
+  # 4. FastAPI Backend API (Production Multi-worker Gunicorn)
   # ──────────────────────────────────────────────────────────
   backend:
     build:
@@ -69,15 +134,18 @@ services:
       LOG_LEVEL: INFO
       LOG_FORMAT: json
       POSTGRES_HOST: postgres
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-supportpilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supportpilot_prod}
-      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-supportpilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supportpilot_prod}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-supportpilot_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supportpilot_prod}
+      DATABASE_URL_SYNC: postgresql://${POSTGRES_USER:-supportpilot_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-supportpilot_prod}
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: 8000
     volumes:
       - uploads_prod_data:/app/uploads
-      - chroma_prod_data:/app/chroma_data
-    ports:
-      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
+    expose:
+      - "8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      chromadb:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -97,7 +165,7 @@ services:
       - supportpilot_prod_net
 
   # ──────────────────────────────────────────────────────────
-  # 3. Next.js Frontend Service (Standalone Production)
+  # 5. Next.js Frontend Dashboard (Production Standalone)
   # ──────────────────────────────────────────────────────────
   frontend:
     build:
@@ -110,9 +178,9 @@ services:
       - .env.production
     environment:
       NODE_ENV: production
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-    ports:
-      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://api.yourdomain.com}
+    expose:
+      - "3000"
     depends_on:
       backend:
         condition: service_healthy
@@ -134,24 +202,24 @@ services:
       - supportpilot_prod_net
 
   # ──────────────────────────────────────────────────────────
-  # 4. n8n Automation Engine (Production Workflow Runner)
+  # 6. n8n Automation Engine (Private Secure Workflow Runner)
   # ──────────────────────────────────────────────────────────
   n8n:
     image: docker.n8n.io/n8nio/n8n:latest
     container_name: supportpilot_n8n_prod
     restart: always
     environment:
-      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_HOST=${N8N_HOST:-n8n.yourdomain.com}
       - N8N_PORT=5678
-      - N8N_PROTOCOL=http
-      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-http://localhost:5678/webhook}
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=${N8N_WEBHOOK_URL:-https://n8n.yourdomain.com/webhook}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?n8n encryption key required}
       - EXECUTIONS_DATA_PRUNE=true
       - EXECUTIONS_DATA_MAX_AGE=168
     volumes:
       - n8n_prod_data:/home/node/.n8n
-    ports:
-      - "127.0.0.1:${N8N_PORT:-5678}:5678"
+    expose:
+      - "5678"
     depends_on:
       postgres:
         condition: service_healthy

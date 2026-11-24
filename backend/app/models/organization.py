@@ -27,6 +27,16 @@ class Organization(UUIDMixin, TimestampMixin, Base):
     plan: Mapped[str] = mapped_column(String(50), default="free", nullable=False)
     max_users: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     max_tickets_per_month: Mapped[int] = mapped_column(Integer, default=500, nullable=False)
+    max_ai_messages_per_month: Mapped[int] = mapped_column(Integer, default=1000, nullable=False)
+    ai_messages_used_this_month: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    # Embeddable Chatbot Widget configuration
+    widget_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    widget_primary_color: Mapped[str] = mapped_column(String(50), default="#4F46E5", nullable=False)
+    widget_greeting: Mapped[str | None] = mapped_column(
+        Text, default="Hi there! How can we help you today?", nullable=True
+    )
+    widget_allowed_domains: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

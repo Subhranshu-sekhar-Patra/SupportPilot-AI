@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # SupportPilot AI — Windows PowerShell PostgreSQL Backup Script
 # Usage: .\scripts\backup_db.ps1 [-BackupDir ".\backups\postgres"]
 # ============================================================

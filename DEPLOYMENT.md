@@ -1,46 +1,51 @@
 # SupportPilot AI — Production Deployment Guide
 
-This guide provides end-to-end instructions for deploying SupportPilot AI to production using Docker Compose, reverse proxies with SSL termination, automated database migrations, and operational observability.
+This guide provides end-to-end instructions for deploying SupportPilot AI to production using Docker Compose, Caddy reverse proxy with automated Let's Encrypt / ZeroSSL termination, isolated database networks, and multi-tenant SaaS features.
+
+For dedicated VPS provisioning instructions, see the [Ubuntu VPS Deployment Runbook](file:///docs/UBUNTU_VPS_DEPLOYMENT.md).
 
 ---
 
 ## Architecture Overview
 
 ```
-                      ┌─────────────────────────────────────────┐
-                      │          Nginx Reverse Proxy            │
-                      │     (HTTPS 443 with Let's Encrypt)      │
-                      └─────────────┬───────────────────────────┘
-                                    │
-              ┌─────────────────────┴─────────────────────┐
-              │                                           │
-              ▼                                           ▼
-┌───────────────────────────┐               ┌───────────────────────────┐
-│     Next.js Frontend      │               │      FastAPI Backend      │
-│      (Port 3000)          │               │  Gunicorn / Uvicorn Workers│
-│   (Standalone Next 14)    │               │        (Port 8000)        │
-└───────────────────────────┘               └─────────────┬─────────────┘
-                                                          │
-                             ┌────────────────────────────┼───────────────────────────┐
-                             │                            │                           │
-                             ▼                            ▼                           ▼
-              ┌───────────────────────────┐┌───────────────────────────┐┌───────────────────────────┐
-              │    PostgreSQL 16 DB       ││    ChromaDB Vector Store  ││   n8n Automation Engine   │
-              │  (Port 5432 - Isolated)   ││    (Multi-tenant Embeddings││ (Port 5678 - Authenticated)│
-              └───────────────────────────┘└───────────────────────────┘└───────────────────────────┘
+                                  [ Internet / Clients ]
+                                             │
+                                   Port 80 / 443 (TLS)
+                                             ▼
+                        ┌────────────────────────────────────────┐
+                        │      Caddy 2 Reverse Proxy             │
+                        │    (Automatic HTTPS & Cert Renewal)    │
+                        └───────┬────────────┬───────────┬───────┘
+                                │            │           │
+                 ┌──────────────┘            │           └──────────────┐
+                 ▼                           ▼                          ▼
+    ┌─────────────────────────┐  ┌────────────────────────┐  ┌────────────────────────┐
+    │  Next.js 14 Frontend    │  │   FastAPI Backend      │  │  n8n Automation Engine │
+    │  app.yourdomain.com     │  │   api.yourdomain.com   │  │  n8n.yourdomain.com    │
+    │  (Port 3000 internal)   │  │   (Port 8000 internal) │  │  (Port 5678 internal)  │
+    └─────────────────────────┘  └───────────┬────────────┘  └────────────────────────┘
+                                             │
+                     ┌───────────────────────┴───────────────────────┐
+                     ▼                                               ▼
+      ┌─────────────────────────────┐                 ┌─────────────────────────────┐
+      │   PostgreSQL 16 Database    │                 │   ChromaDB Vector Store     │
+      │   (Isolated Docker Network) │                 │   (Isolated Docker Network) │
+      │   127.0.0.1:5432 (local)    │                 │   chromadb:8000 (no host)   │
+      └─────────────────────────────┘                 └─────────────────────────────┘
 ```
 
 ---
 
 ## 1. Prerequisites
 
-- **Host Operating System:** Ubuntu 22.04 LTS, Debian 12, or RHEL 9 (Windows Server with Docker Desktop also supported).
+- **Host Operating System:** Ubuntu 22.04 LTS / 24.04 LTS, Debian 12, or modern Linux.
 - **Docker:** Engine v25.0+ and Docker Compose v2.24+.
 - **Hardware Minimum:** 4 vCPU, 8 GB RAM, 50 GB SSD.
 - **DNS Records:**
   - `app.yourdomain.com` → A record pointing to host public IP.
   - `api.yourdomain.com` → A record pointing to host public IP.
-  - `n8n.yourdomain.com` (optional for workflow admin UI) → A record.
+  - `n8n.yourdomain.com` → A record pointing to host public IP.
 
 ---
 
@@ -67,13 +72,13 @@ This guide provides end-to-end instructions for deploying SupportPilot AI to pro
    openssl rand -base64 24 # Use for POSTGRES_PASSWORD
    ```
 
-   Ensure `GEMINI_API_KEY` is set to an active Google Gemini API key with access to `gemini-2.0-flash` and `models/text-embedding-004`.
+   Ensure `GEMINI_API_KEY` is set to an active Google Gemini API key.
 
 ---
 
 ## 3. Launching Services with Docker Compose
 
-1. Build and start all services in detached mode:
+1. Build and start all 6 services in detached mode:
    ```bash
    docker compose -f docker-compose.prod.yml up -d --build
    ```
@@ -86,7 +91,9 @@ This guide provides end-to-end instructions for deploying SupportPilot AI to pro
    Expected status:
    ```
    NAME                           IMAGE                                STATUS
+   supportpilot_caddy_prod        caddy:2-alpine                       Up (healthy)
    supportpilot_postgres_prod     postgres:16-alpine                   Up (healthy)
+   supportpilot_chromadb_prod     chromadb/chroma:0.5.20               Up (healthy)
    supportpilot_backend_prod      supportpilot-backend:latest          Up (healthy)
    supportpilot_frontend_prod     supportpilot-frontend:latest         Up (healthy)
    supportpilot_n8n_prod          docker.n8n.io/n8nio/n8n:latest       Up (healthy)
@@ -94,10 +101,23 @@ This guide provides end-to-end instructions for deploying SupportPilot AI to pro
 
 3. Execute database schema migrations:
    ```bash
-   docker compose -f docker-compose.prod.yml exec backend alembic upgrade head
+   docker compose -f docker-compose.prod.yml exec backend python -m alembic upgrade head
+   ```
+
+4. Create the initial Super Admin account:
+   ```bash
+   docker compose -f docker-compose.prod.yml exec backend python -m app.scripts.create_superadmin \
+     --email "admin@yourdomain.com" \
+     --password "YourAdminPassword123!" \
+     --name "Platform Administrator"
    ```
 
 ---
+
+## 4. Operational Runbooks
+- **Ubuntu VPS Step-by-Step Deployment:** [`docs/UBUNTU_VPS_DEPLOYMENT.md`](file:///docs/UBUNTU_VPS_DEPLOYMENT.md)
+- **Database Backup & Disaster Recovery:** [`docs/BACKUP_AND_RESTORE.md`](file:///docs/BACKUP_AND_RESTORE.md)
+
 
 ## 4. Reverse Proxy Setup (Nginx + Let's Encrypt)
 
